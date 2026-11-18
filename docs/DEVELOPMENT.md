@@ -9,7 +9,9 @@ npm run typecheck
 npm run build
 ```
 
-Copy `.env.example` to `.env.local`. Only `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` belong in browser code. Never commit `.env.local` or expose service credentials in `VITE_` variables.
+Put the browser Supabase values (`VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`) and server values in your ignored local `.env` file. Vite loads `.env` and the mode-specific `.env.*` files for local development. The local file API reads only the server-side allowlist (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `APPWRITE_*`) in Node; never prefix these secrets with `VITE_` or commit a local env file.
+
+Run `npm run dev` to start the frontend and local file API together. Vite's development-only middleware forwards `/api/files/upload` and `/api/files/:id` to the existing handlers in `api/files`. The handlers keep Appwrite storage and Supabase metadata behavior. Production builds do not include this middleware; Vercel continues to serve those same `/api/files/*` handlers.
 
 ## Structure
 
@@ -18,7 +20,7 @@ Copy `.env.example` to `.env.local`. Only `VITE_SUPABASE_URL` and `VITE_SUPABASE
 - `src/features/communities/service.ts`: community and membership repository calls.
 - `src/lib`: shared backend clients.
 - `supabase/migrations`: schema, security functions, RLS and initial community seed.
-- `api`: server-only endpoints (planned; keep Appwrite credentials server-side).
+- `api`: server-only Vercel endpoints, also mounted by the Vite development middleware (keep Appwrite credentials server-side).
 
 ## Known gaps before production
 

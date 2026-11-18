@@ -107,6 +107,7 @@ export default async function handler(req, res) {
     res.end(Buffer.from(await result.arrayBuffer()));
   } catch (error) {
     const message = error instanceof Error ? error.message : 'File request failed';
+    console.error(`[api/files/${req.method === 'DELETE' ? 'delete' : 'download'}] request failed:`, message);
     return reply(res, 500, { error: process.env.NODE_ENV === 'production' ? 'File request failed' : message });
   }
 }
