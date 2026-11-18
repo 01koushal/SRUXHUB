@@ -27,8 +27,18 @@ In Supabase **SQL Editor**, create a query for each file and run these in order:
 1. `supabase/migrations/001_initial_schema.sql`
 2. `supabase/migrations/002_security_functions_seed.sql`
 3. `supabase/migrations/003_google_oauth_onboarding.sql`
+4. `supabase/migrations/004_api_read_and_onboarding_grants.sql`
+5. `supabase/migrations/005_complete_api_privileges.sql`
 
-Run all three before enabling sign-in. Migration 003 removes the legacy email-derived profile trigger, adds onboarding state and applies OAuth/domain restrictions to participation policies. It marks existing complete profiles as onboarded, but old non-Google identities remain unable to participate. The migration is intended for databases that already ran 001 and 002 as well as fresh installs.
+Run all five before enabling sign-in. Migration 003 removes the legacy email-derived profile trigger, adds onboarding state and applies OAuth/domain restrictions to participation policies. It marks existing complete profiles as onboarded, but old non-Google identities remain unable to participate. Migration 004 grants public community/feed/profile reads and the profile privileges needed for onboarding. Migration 005 resets API privileges for SRUXHUB tables to a least-privilege set, enables community/post/comment operations, private membership reads and admin role changes, saves, notifications, eligible file metadata reads, and restricted report submission/review. RLS still controls the rows and ownership. It also removes public membership visibility and unintended broad table privileges.
+
+For an existing database that already ran migrations 001–004, apply only migration 005. Do not rerun 001–004 over existing tables; use the development reset script only if you intentionally want to delete and rebuild all SRUXHUB application data.
+
+### Optional development-only full reset
+
+For a **disposable development project only**, run `supabase/reset_and_rebuild.sql` instead of running migrations 001–005 individually. It deletes all rows and rebuilds these SRUXHUB tables: `profiles`, `communities`, `community_members`, `posts`, `files`, `post_attachments`, `comments`, `votes`, `saved_posts`, `notifications`, and `reports`. It preserves Supabase Auth users, Supabase Storage infrastructure and unrelated public objects. It reseeds the ten default communities. Appwrite binary files are outside the database and remain in the bucket as unlinked objects; remove those separately if desired. Existing users will need to sign in again and complete onboarding, and you will need to reassign the first admin. **Review the script and confirm the selected Supabase project before running it.** Never run it against production or a database containing data you need.
+
+The manual read grants for `communities`, `posts`, and `profiles` are incorporated. Do not restore a table-wide `GRANT UPDATE ON profiles`; migration 005 grants only the profile columns used by the app.
 
 CLI alternative: use Supabase CLI migrations in a linked project if your team has adopted the CLI. These checked-in files are plain SQL; for this repo the SQL Editor sequence above is the direct setup path. Do not run a later migration before its prerequisites.
 
