@@ -2,7 +2,7 @@
 
 - Browser receives only Supabase URL and publishable key. RLS is the authorization boundary for direct Postgres access.
 - Service role and Appwrite API keys are server-only secrets.
-- Signup metadata is copied to a profile by a security-definer trigger. RLS prevents self-assignment of privileged membership roles.
+- Profiles are created only after explicit SRU Google onboarding. RLS and SQL helper functions enforce the Google provider and `@sru.edu.in` domain on protected mutations; RLS prevents self-assignment of privileged membership roles.
 - Posts and comments have bounded lengths; reports are visible only to admins.
 - Appwrite bucket must remain private. Authenticated upload/download endpoints and file scanning are still required before accepting uploads.
 - Review SQL functions and RLS against a nonproduction project. The initial seed creates communities but no fabricated posts or users.
