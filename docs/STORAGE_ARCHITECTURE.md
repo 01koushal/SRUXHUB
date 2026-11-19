@@ -14,6 +14,6 @@ The frontend validates supported extensions, MIME types and the 25 MB per-file s
 
 Downloads, previews and deletion use the existing authenticated `/api/files/{id}` handler. Binaries stay private in Appwrite. Supabase rows record Appwrite identifiers, community, owner, MIME, byte size, timestamps and the server-computed checksum. The community file list RPC returns database vote counts and the signed-in user's vote state, scoped to communities they joined. The vote RPC locks the target file and toggles the unique `(file_id, user_id)` row.
 
-Apply migrations `006_community_file_sharing.sql` and `007_file_upload_sessions.sql` after migrations 001–005 before using the file list, votes, or chunked uploads. They preserve existing file rows and objects, expand the size check, and add/repair session and vote tables and the checksum uniqueness rule.
+Apply migrations `006_community_file_sharing.sql`, `007_file_upload_sessions.sql` and `008_appwrite_chunk_staging.sql` after migrations 001–005 before using the file list, votes, or chunked uploads. They preserve existing file rows and objects, expand the size check, add/repair session and vote tables, and stage browser chunks into Appwrite-valid provider chunks.
 
 The project does not currently scan for malware or inspect every accepted format's full binary structure. SHA-256 identifies byte-identical files only; it does not identify modified, visually similar, recompressed or re-ordered documents.

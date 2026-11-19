@@ -1,4 +1,6 @@
-export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+import { Account, Client, Storage } from 'appwrite';
+
+export const MAX_UPLOAD_BYTES = 300 * 1024 * 1024;
 export const UPLOAD_CHUNK_BYTES = 3 * 1024 * 1024;
 
 export type StoredFile = {
@@ -94,126 +96,55 @@ function getUploadMime(file: File) {
 
 function validateUpload(file: File) {
   if (!file.size) throw new Error('Choose a non-empty file.');
-  if (file.size > MAX_UPLOAD_BYTES) throw new Error('Maximum file size is 25 MB.');
+  if (file.size > MAX_UPLOAD_BYTES) throw new Error('Maximum file size is 300 MB.');
   const extension = allowedTypes.get(getUploadMime(file));
   if (!extension || !file.name.toLowerCase().endsWith(`.${extension}`)) {
     throw new Error('Supported files: images, PDF, PowerPoint, Word and ZIP.');
   }
 }
 
-function uploadChunk(
-  file: File,
-  chunk: Blob,
-  communityId: string,
-  token: string,
-  action: 'start' | 'chunk',
-  sessionId: string | undefined,
-  progress: (loaded: number) => void,
-  signal?: AbortSignal,
-) {
-  return new Promise<{ status: number; body: Record<string, unknown> }>((resolve, reject) => {
-    if (signal?.aborted) return reject(new Error('Upload was cancelled.'));
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/files/upload');
-    xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-    xhr.setRequestHeader('X-Upload-Action', action);
-    xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
-    xhr.setRequestHeader('X-File-Mime', getUploadMime(file));
-    xhr.setRequestHeader('X-File-Size', String(file.size));
-    xhr.setRequestHeader('X-Community-Id', communityId);
-    if (sessionId) xhr.setRequestHeader('X-Upload-Session', sessionId);
-    xhr.upload.onprogress = event => {
-      if (event.lengthComputable) progress(event.loaded);
-    };
-    const abort = () => xhr.abort();
-    signal?.addEventListener('abort', abort, { once: true });
-    const finish = () => signal?.removeEventListener('abort', abort);
-    xhr.onerror = () => { finish(); reject(new Error('Upload connection failed. Retry the file.')); };
-    xhr.ontimeout = () => { finish(); reject(new Error('Upload timed out. Retry the file.')); };
-    xhr.onabort = () => { finish(); reject(new Error('Upload was cancelled.')); };
-    xhr.onload = () => {
-      finish();
-      try {
-        const body = JSON.parse(xhr.responseText) as Record<string, unknown>;
-        if (xhr.status < 200 || xhr.status >= 300) {
-          const existing = body.existingFile && typeof body.existingFile === 'object'
-            ? toStoredFile(body.existingFile as Record<string, unknown>)
-            : undefined;
-          reject(new FileUploadError(typeof body.error === 'string' ? body.error : `Upload failed (HTTP ${xhr.status}).`, existing));
-        } else {
-          resolve({ status: xhr.status, body });
-        }
-      } catch {
-        reject(new Error(`Upload server returned an unreadable response (HTTP ${xhr.status || 'unknown'}).`));
-      }
-    };
-    xhr.timeout = 90_000;
-    xhr.send(chunk);
-  });
-}
-
 export class AppwriteStorageProvider implements StorageProvider {
   async upload(file: File, communityId: string, token: string, onProgress?: (percent: number) => void, signal?: AbortSignal) {
     validateUpload(file);
-    let uploadedBefore = 0;
-    let sessionId: string | undefined;
+    if (signal?.aborted) throw new Error('Upload was cancelled.');
+    const authorize = await fetch('/api/files/direct', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'authorize', communityId, name: file.name, mime: getUploadMime(file), size: file.size }),
+    });
+    const authorization = await authorize.json() as Record<string, unknown>;
+    if (!authorize.ok) throw new FileUploadError(typeof authorization.error === 'string' ? authorization.error : 'Could not authorize upload.');
+    const required = ['uploadId', 'userId', 'secret', 'fileId', 'endpoint', 'projectId', 'bucketId'];
+    if (required.some(key => typeof authorization[key] !== 'string')) throw new Error('Upload server returned an invalid authorization.');
+    const uploadId = String(authorization.uploadId);
+    const client = new Client().setEndpoint(String(authorization.endpoint)).setProject(String(authorization.projectId));
+    const account = new Account(client);
+    const storage = new Storage(client);
     try {
-      let response = await uploadChunk(
-        file,
-        file.slice(0, Math.min(file.size, UPLOAD_CHUNK_BYTES)),
-        communityId,
-        token,
-        'start',
-        undefined,
-        loaded => onProgress?.(Math.min(99, Math.floor((uploadedBefore + loaded) / file.size * 100))),
-        signal,
-      );
-      if (response.status === 201) {
-        onProgress?.(100);
-        return parseUploadResponse(JSON.stringify(response.body), response.status);
-      }
-      sessionId = typeof response.body.uploadSessionId === 'string' ? response.body.uploadSessionId : undefined;
-      let offset = Number(response.body.nextOffset);
-      if (!sessionId || !Number.isInteger(offset) || offset <= 0) throw new Error('Upload server did not create a valid upload session.');
-      uploadedBefore = offset;
-
-      while (offset < file.size) {
-        if (signal?.aborted) throw new Error('Upload was cancelled.');
-        const end = Math.min(offset + UPLOAD_CHUNK_BYTES, file.size);
-        response = await uploadChunk(
-          file,
-          file.slice(offset, end),
-          communityId,
-          token,
-          'chunk',
-          sessionId,
-          loaded => onProgress?.(Math.min(99, Math.floor((uploadedBefore + loaded) / file.size * 100))),
-          signal,
-        );
-        if (response.status === 201) {
-          onProgress?.(100);
-          return parseUploadResponse(JSON.stringify(response.body), response.status);
-        }
-        offset = Number(response.body.nextOffset);
-        if (!Number.isInteger(offset) || offset <= uploadedBefore || offset > file.size) {
-          throw new Error('Upload server returned an invalid chunk offset.');
-        }
-        uploadedBefore = offset;
-        onProgress?.(Math.floor(offset / file.size * 100));
-      }
-      throw new Error('Upload finished without a completion response. Retry the file.');
+      await account.createSession({ userId: String(authorization.userId), secret: String(authorization.secret) });
+      if (signal?.aborted) throw new Error('Upload was cancelled.');
+      await storage.createFile({ bucketId: String(authorization.bucketId), fileId: String(authorization.fileId), file, onProgress: progress => onProgress?.(Math.floor(progress.progress)) });
+      const finalize = await fetch('/api/files/direct', {
+        method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'finalize', uploadId: authorization.uploadId }),
+      });
+      const finalized = await finalize.text();
+      onProgress?.(100);
+      return parseUploadResponse(finalized, finalize.status);
     } catch (error) {
-      if (sessionId) await this.cancelUpload(sessionId, token);
+      await this.cancelUpload(uploadId, token);
       throw error;
+    } finally {
+      await account.deleteSession({ sessionId: 'current' }).catch(() => undefined);
     }
   }
 
   async cancelUpload(sessionId: string, token: string) {
     try {
-      await fetch('/api/files/upload', {
+      await fetch('/api/files/direct', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'X-Upload-Action': 'cancel', 'X-Upload-Session': sessionId },
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'cancel', uploadId: sessionId }),
       });
     } catch { /* Expired sessions are removed by the server cleanup pass. */ }
   }

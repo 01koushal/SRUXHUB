@@ -26,7 +26,7 @@ describe('upload response handling', () => {
   it('rejects files above the server limit before opening a request', async () => {
     const provider = new AppwriteStorageProvider();
     await expect(provider.upload({ size: MAX_UPLOAD_BYTES + 1 } as File, 'community', 'token'))
-      .rejects.toThrow('Maximum file size is 25 MB.');
+      .rejects.toThrow('Maximum file size is 300 MB.');
   });
 
   it('returns the existing file details with an exact-content conflict', () => {

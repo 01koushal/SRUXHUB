@@ -76,7 +76,7 @@ export default function FilesPage({ communities }: { communities: Community[] })
     for (let index = 0; index < selectedFiles.length; index++) {
       const file = selectedFiles[index];
       if (file.size > MAX_UPLOAD_BYTES) {
-        setError(`${file.name} is larger than the 25 MB limit.`);
+        setError(`${file.name} is larger than the 300 MB limit.`);
         setFailedFile(file);
         break;
       }
@@ -164,7 +164,7 @@ export default function FilesPage({ communities }: { communities: Community[] })
         </select></label>
         <label className="file-picker">Choose files<input ref={inputRef} type="file" name="files" required multiple
           accept="image/jpeg,image/png,image/webp,image/gif,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/zip,application/x-zip-compressed,.zip"/>
-          <small>Images, PDF, PowerPoint, Word or ZIP · 25 MB max per file</small></label>
+          <small>Images, PDF, PowerPoint, Word or ZIP · 300 MB max per file</small></label>
       </div>
       {busy && <div className="upload-progress" aria-live="polite">
         <div className="progress-caption"><span>Uploading {currentName} — {progress}%</span><button type="button" className="text-button" onClick={cancelUpload}>Cancel</button></div>
@@ -177,7 +177,7 @@ export default function FilesPage({ communities }: { communities: Community[] })
       </div>}
       {error && <p className="form-message" role="alert">{error}</p>}
       <div className="upload-panel-footer">
-        <span>Maximum file size: 25 MB</span>
+        <span>Maximum file size: 300 MB</span>
         <div className="button-row">
           {failedFile && <button type="button" className="secondary" onClick={() => void uploadFiles(undefined, 'retry')}>Retry {failedFile.name}</button>}
           <button className="primary" disabled={busy || !community}>{busy ? 'Uploading…' : 'Upload files'}</button>

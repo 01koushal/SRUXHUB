@@ -35,7 +35,7 @@ test('accepts a multi-chunk PDF through Vite, Appwrite and Supabase metadata', a
   try {
     const middleware = await registerMiddleware();
     await withServer(middleware, async base => {
-      const bytes = Buffer.alloc(UPLOAD_CHUNK_BYTES + 17, 0x61);
+      const bytes = Buffer.alloc(UPLOAD_CHUNK_BYTES * 3 + 17, 0x61);
       Buffer.from('%PDF-').copy(bytes);
       const headers = uploadHeaders({ name: 'notes.pdf', mime: 'application/pdf', size: bytes.length });
       const first = await nativeFetch(`${base}/api/files/upload`, {
@@ -46,19 +46,34 @@ test('accepts a multi-chunk PDF through Vite, Appwrite and Supabase metadata', a
       const { uploadSessionId, nextOffset } = await first.json();
       assert.equal(nextOffset, UPLOAD_CHUNK_BYTES);
 
-      const second = await nativeFetch(`${base}/api/files/upload`, {
-        method: 'POST', headers: { ...headers, 'X-Upload-Action': 'chunk', 'X-Upload-Session': uploadSessionId },
-        body: bytes.subarray(UPLOAD_CHUNK_BYTES),
-      });
-      const secondBody = await second.json();
-      assert.equal(second.status, 201, JSON.stringify(secondBody));
-      const file = secondBody;
+      let offset = nextOffset;
+      let finalResponse;
+      while (offset < bytes.length) {
+        const response = await nativeFetch(`${base}/api/files/upload`, {
+          method: 'POST', headers: { ...headers, 'X-Upload-Action': 'chunk', 'X-Upload-Session': uploadSessionId },
+          body: bytes.subarray(offset, Math.min(offset + UPLOAD_CHUNK_BYTES, bytes.length)),
+        });
+        const body = await response.json();
+        if (response.status === 201) {
+          finalResponse = body;
+          break;
+        }
+        assert.equal(response.status, 200, JSON.stringify(body));
+        offset = body.nextOffset;
+      }
+      assert.ok(finalResponse);
+      const file = finalResponse;
       assert.equal(file.name, 'notes.pdf');
       assert.equal(file.size, bytes.length);
       assert.equal(file.provider, 'appwrite');
       assert.equal(backend.completedUploads, 1);
-      assert.equal(backend.lastRange, `bytes ${UPLOAD_CHUNK_BYTES}-${bytes.length - 1}/${bytes.length}`);
+      assert.equal(backend.lastRange, `bytes ${5 * 1024 * 1024}-${bytes.length - 1}/${bytes.length}`);
       assert.equal(backend.files[0].sha256, backend.sha256(bytes));
+      assert.equal(backend.appwriteRequests.length, 2);
+      assert.equal(backend.appwriteRequests[0].headers['X-Appwrite-ID'], undefined);
+      assert.equal(backend.appwriteRequests[0].headers['Content-Range'], `bytes 0-${5 * 1024 * 1024 - 1}/${bytes.length}`);
+      assert.equal(backend.appwriteRequests[1].headers['X-Appwrite-ID'], backend.appwriteRequests[0].fileId);
+      assert.equal(backend.appwriteRequests[1].headers['Content-Range'], `bytes ${5 * 1024 * 1024}-${bytes.length - 1}/${bytes.length}`);
     });
   } finally {
     globalThis.fetch = nativeFetch;
@@ -234,6 +249,7 @@ function createBackendMock() {
   let fileSequence = 0;
   let completedUploads = 0;
   let lastRange = '';
+  const appwriteRequests = [];
 
   async function fetchMock(input, init = {}) {
     const url = new URL(input instanceof Request ? input.url : input);
@@ -310,6 +326,7 @@ function createBackendMock() {
       const blob = form.get('file');
       const bytes = Buffer.from(await blob.arrayBuffer());
       const range = init.headers['Content-Range'];
+      appwriteRequests.push({ fileId, headers: init.headers });
       lastRange = range || '';
       if (range) {
         const parsed = range.match(/^bytes (\d+)-(\d+)\/(\d+)$/);
@@ -342,6 +359,7 @@ function createBackendMock() {
     sessions,
     files,
     storedFiles,
+    appwriteRequests,
     get completedUploads() { return completedUploads; },
     get lastRange() { return lastRange; },
   sha256(bytes) { return createHash('sha256').update(bytes).digest('hex'); },

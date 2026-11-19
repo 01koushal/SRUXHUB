@@ -3,8 +3,9 @@ import { createClient } from '@supabase/supabase-js';
 
 export const config = { api: { bodyParser: false, sizeLimit: '4mb' } };
 
-const MAX_FILE_SIZE = 25 * 1024 * 1024;
+const MAX_FILE_SIZE = 300 * 1024 * 1024;
 const MAX_CHUNK_SIZE = 3 * 1024 * 1024;
+const APPWRITE_CHUNK_SIZE = 5 * 1024 * 1024;
 const SESSION_MAX_AGE = 24 * 60 * 60 * 1000;
 const allowedTypes = new Map([
   ['image/jpeg', 'jpg'],
@@ -31,6 +32,21 @@ function requestError(status, message, extra = {}) {
 
 function missingUploadSessionTable(error) {
   return error?.code === 'PGRST205' || error?.code === '42P01';
+}
+
+function missingUploadStaging(error) {
+  return error?.code === 'PGRST204' || /received_offset|pending_bytes|upload_status/i.test(error?.message || '');
+}
+
+function asBytea(bytes) {
+  return `\\x${bytes.toString('hex')}`;
+}
+
+function fromBytea(value) {
+  if (typeof value !== 'string' || !value.startsWith('\\x')) {
+    throw requestError(500, 'Upload session data is invalid. Start the upload again.');
+  }
+  return Buffer.from(value.slice(2), 'hex');
 }
 
 async function readChunk(req) {
@@ -127,7 +143,7 @@ function storageConfig() {
   return { endpoint: endpoint.replace(/\/$/, ''), project, key, bucket };
 }
 
-async function appwriteRequest(config, fileId, bytes, range, name, mime) {
+async function appwriteRequest(config, { fileId, bytes, range, name, mime, chunkNumber, start, end, totalSize, sessionOffsetBefore, isInitial }) {
   const form = new FormData();
   form.append('fileId', fileId);
   form.append('file', new Blob([bytes], { type: mime }), name);
@@ -136,7 +152,11 @@ async function appwriteRequest(config, fileId, bytes, range, name, mime) {
     'X-Appwrite-Key': config.key,
   };
   if (range) {
-    headers['X-Appwrite-ID'] = fileId;
+    // Appwrite uses Content-Range for every partial request. The initial
+    // request creates the file; only later chunks identify that existing file.
+    // Sending X-Appwrite-ID on chunk one asks Appwrite to append to an ID that
+    // does not exist yet, which breaks uploads as soon as they need chunking.
+    if (!isInitial) headers['X-Appwrite-ID'] = fileId;
     headers['Content-Range'] = range;
   }
   const result = await fetch(`${config.endpoint}/storage/buckets/${encodeURIComponent(config.bucket)}/files`, {
@@ -144,18 +164,33 @@ async function appwriteRequest(config, fileId, bytes, range, name, mime) {
     headers,
     body: form,
   });
+  let body = {};
+  try { body = await result.json(); } catch { /* Provider may return an empty response. */ }
+  const message = typeof body.message === 'string' ? body.message : '';
+  const returnedFileId = typeof body.$id === 'string' ? body.$id : '';
+  const diagnostic = {
+    chunkNumber,
+    startOffset: start,
+    endOffset: end,
+    totalSize,
+    receivedBytes: bytes.length,
+    sessionOffsetBefore,
+    appwriteStatus: result.status,
+    appwriteFileId: returnedFileId || null,
+    expectedFileId: fileId,
+    appwriteError: message || null,
+  };
   if (!result.ok) {
-    let message = '';
-    try {
-      const body = await result.json();
-      message = typeof body.message === 'string' ? body.message : '';
-    } catch { /* Provider may return an empty response. */ }
-    console.error('[api/files/upload] Appwrite chunk rejected:', {
-      status: result.status,
-      message: message || 'No provider error body',
-    });
+    console.error('[api/files/upload] Appwrite chunk rejected:', diagnostic);
     throw requestError(502, message || `Appwrite upload failed (HTTP ${result.status}).`);
   }
+  console.info('[api/files/upload] Appwrite chunk accepted:', diagnostic);
+  if (!returnedFileId) throw requestError(502, 'Appwrite accepted a chunk without returning its file ID.');
+  if (returnedFileId !== fileId) {
+    console.error('[api/files/upload] Appwrite returned an unexpected file ID:', diagnostic);
+    throw requestError(502, 'Appwrite returned an unexpected file ID for this upload.');
+  }
+  return returnedFileId;
 }
 
 async function deleteStoredFile(config, fileId) {
@@ -285,6 +320,72 @@ async function completeSession(db, config, session) {
   return clientFile(file);
 }
 
+async function flushReadyAppwriteChunk(db, config, session) {
+  const pending = fromBytea(session.pending_bytes);
+  const receivedOffset = Number(session.received_offset);
+  const committedOffset = Number(session.next_offset);
+  const totalSize = Number(session.total_size);
+  const isFinal = receivedOffset === totalSize;
+  const readySize = isFinal ? pending.length : APPWRITE_CHUNK_SIZE;
+
+  if (pending.length < readySize) return session;
+  if (receivedOffset - pending.length !== committedOffset) {
+    console.error('[api/files/upload] invalid staged upload offsets:', {
+      sessionId: session.id,
+      receivedOffset,
+      committedOffset,
+      pendingBytes: pending.length,
+    });
+    throw requestError(500, 'Upload session data is inconsistent. Start the upload again.');
+  }
+
+  const bytes = pending.subarray(0, readySize);
+  const end = committedOffset + bytes.length;
+  const isInitial = committedOffset === 0;
+  const range = bytes.length < totalSize ? `bytes ${committedOffset}-${end - 1}/${totalSize}` : undefined;
+  const chunkNumber = Math.floor(committedOffset / APPWRITE_CHUNK_SIZE) + 1;
+  await appwriteRequest(config, {
+    fileId: session.storage_file_id,
+    bytes,
+    range,
+    name: session.original_filename,
+    mime: session.mime_type,
+    chunkNumber,
+    start: committedOffset,
+    end: end - 1,
+    totalSize,
+    sessionOffsetBefore: committedOffset,
+    isInitial,
+  });
+
+  const remaining = pending.subarray(readySize);
+  const { data: advanced, error } = await db.from('file_upload_sessions')
+    .update({
+      next_offset: end,
+      pending_bytes: asBytea(remaining),
+      upload_status: end === totalSize ? 'stored' : 'receiving',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', session.id)
+    .eq('next_offset', committedOffset)
+    .eq('received_offset', receivedOffset)
+    .select('*')
+    .single();
+  if (error || !advanced) {
+    console.error('[api/files/upload] Appwrite-confirmed session advance failed:', error?.message || 'Session changed concurrently');
+    throw requestError(500, 'Could not record the uploaded chunk. Retry this file.');
+  }
+  console.info('[api/files/upload] session offset advanced:', {
+    sessionId: session.id,
+    chunkNumber,
+    sessionOffsetBefore: committedOffset,
+    sessionOffsetAfter: end,
+    receivedOffset: Number(advanced.received_offset),
+    stagedBytes: remaining.length,
+  });
+  return advanced;
+}
+
 async function startUpload(req, db, config, user) {
   const communityId = String(req.headers['x-community-id'] || '');
   await assertCommunityMember(db, communityId, user.id);
@@ -292,11 +393,19 @@ async function startUpload(req, db, config, user) {
   const mime = String(req.headers['x-file-mime'] || '').split(';')[0].toLowerCase();
   const totalSize = Number(req.headers['x-file-size']);
   if (!Number.isInteger(totalSize) || totalSize <= 0 || totalSize > MAX_FILE_SIZE) {
-    throw requestError(413, 'Maximum file size is 25 MB.');
+    throw requestError(413, 'Maximum file size is 300 MB.');
   }
   const bytes = await readChunk(req);
   if (bytes.length > totalSize) throw requestError(400, 'Upload chunk exceeds the declared file size.');
   allowedFile(name, mime, bytes, true);
+  console.info('[api/files/upload] chunk received:', {
+    chunkNumber: 1,
+    startOffset: 0,
+    endOffset: bytes.length - 1,
+    totalSize,
+    receivedBytes: bytes.length,
+    sessionOffsetBefore: 0,
+  });
 
   const fileId = randomUUID();
   const { data: session, error } = await db.from('file_upload_sessions').insert({
@@ -306,39 +415,41 @@ async function startUpload(req, db, config, user) {
     original_filename: name,
     mime_type: mime,
     total_size: totalSize,
-    // Persist only confirmed bytes after Appwrite accepts the first chunk.
-    // The session must begin at offset zero so the guarded advance below works.
     next_offset: 0,
+    received_offset: bytes.length,
+    pending_bytes: asBytea(bytes),
+    upload_status: 'receiving',
   }).select('*').single();
   if (error) {
     console.error('[api/files/upload] upload session create failed:', error.message);
     if (missingUploadSessionTable(error)) {
       throw requestError(503, 'File uploads are not enabled in this database yet. Apply migrations 006 and 007, then retry.');
     }
+    if (missingUploadStaging(error)) {
+      throw requestError(503, 'Large-file uploads are not enabled in this database yet. Apply migration 008, then retry.');
+    }
     throw requestError(500, 'Could not start the file upload.');
   }
+  console.info('[api/files/upload] chunk staged:', {
+    chunkNumber: 1,
+    receivedOffsetBefore: 0,
+    receivedOffsetAfter: bytes.length,
+    sessionOffsetBefore: 0,
+    sessionOffsetAfter: 0,
+    appwriteStatus: bytes.length < totalSize && bytes.length < APPWRITE_CHUNK_SIZE ? 'waiting for 5 MiB provider chunk' : 'ready to send',
+  });
 
   try {
-    const range = bytes.length < totalSize ? `bytes 0-${bytes.length - 1}/${totalSize}` : undefined;
-    await appwriteRequest(config, fileId, bytes, range, name, mime);
+    const advanced = await flushReadyAppwriteChunk(db, config, session);
+    if (Number(advanced.next_offset) === totalSize) {
+      const file = await completeSession(db, config, advanced);
+      return { status: 201, body: file };
+    }
+    return { status: 200, body: { uploadSessionId: advanced.id, nextOffset: Number(advanced.received_offset), totalSize } };
   } catch (error) {
     await cleanupSession(db, config, session);
     throw error;
   }
-  const { data: advanced, error: offsetError } = await db.from('file_upload_sessions')
-    .update({ next_offset: bytes.length, updated_at: new Date().toISOString() })
-    .eq('id', session.id).eq('next_offset', 0).select('*').single();
-  if (offsetError || !advanced) {
-    console.error('[api/files/upload] initial upload offset update failed:', offsetError?.message || 'Session was not updated');
-    await cleanupSession(db, config, session);
-    throw requestError(500, 'Could not advance the upload session. Start the upload again.');
-  }
-
-  if (bytes.length === totalSize) {
-    const file = await completeSession(db, config, advanced);
-    return { status: 201, body: file };
-  }
-  return { status: 200, body: { uploadSessionId: advanced.id, nextOffset: bytes.length, totalSize } };
 }
 
 async function continueUpload(req, db, config, user) {
@@ -348,6 +459,10 @@ async function continueUpload(req, db, config, user) {
     .eq('id', id).eq('owner_id', user.id).maybeSingle();
   if (error) throw requestError(500, 'Could not load the upload session.');
   if (!session) throw requestError(404, 'Upload session expired. Start the upload again.');
+  if (session.upload_status !== 'receiving') {
+    await cleanupSession(db, config, session);
+    throw requestError(410, 'This upload session cannot continue. Select the file again to restart.');
+  }
   if (Date.now() - Date.parse(session.created_at) >= SESSION_MAX_AGE) {
     await cleanupSession(db, config, session);
     throw requestError(410, 'Upload session expired. Select the file again to restart.');
@@ -362,28 +477,53 @@ async function continueUpload(req, db, config, user) {
   }
 
   const bytes = await readChunk(req);
-  const start = Number(session.next_offset);
-  const end = start + bytes.length;
-  if (end > Number(session.total_size)) throw requestError(400, 'Upload chunk exceeds the declared file size.');
+  const receivedStart = Number(session.received_offset);
+  const receivedEnd = receivedStart + bytes.length;
+  if (receivedEnd > Number(session.total_size)) throw requestError(400, 'Upload chunk exceeds the declared file size.');
   allowedFile(session.original_filename, session.mime_type, bytes, false);
-  await appwriteRequest(config, session.storage_file_id, bytes,
-    `bytes ${start}-${end - 1}/${session.total_size}`,
-    session.original_filename, session.mime_type);
-
-  const { data: advanced, error: updateError } = await db.from('file_upload_sessions')
-    .update({ next_offset: end, updated_at: new Date().toISOString() })
-    .eq('id', session.id).eq('next_offset', start).select('id').maybeSingle();
-  if (updateError || !advanced) {
-    console.error('[api/files/upload] upload session offset update failed:', updateError?.message || 'Session offset changed concurrently');
-    throw requestError(500, 'Could not advance the upload session. Retry this chunk.');
+  const chunkNumber = Math.floor(receivedStart / MAX_CHUNK_SIZE) + 1;
+  console.info('[api/files/upload] chunk received:', {
+    chunkNumber,
+    startOffset: receivedStart,
+    endOffset: receivedEnd - 1,
+    totalSize: Number(session.total_size),
+    receivedBytes: bytes.length,
+    sessionOffsetBefore: Number(session.next_offset),
+  });
+  const pending = Buffer.concat([fromBytea(session.pending_bytes), bytes]);
+  const { data: buffered, error: bufferError } = await db.from('file_upload_sessions')
+    .update({
+      received_offset: receivedEnd,
+      pending_bytes: asBytea(pending),
+      upload_status: 'receiving',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', session.id)
+    .eq('received_offset', receivedStart)
+    .select('*')
+    .single();
+  if (bufferError || !buffered) {
+    console.error('[api/files/upload] session staging update failed:', bufferError?.message || 'Session changed concurrently');
+    throw requestError(500, 'Could not store this upload chunk. Retry the chunk.');
   }
+  console.info('[api/files/upload] chunk staged:', {
+    chunkNumber,
+    receivedOffsetBefore: receivedStart,
+    receivedOffsetAfter: receivedEnd,
+    sessionOffsetBefore: Number(session.next_offset),
+    sessionOffsetAfter: Number(buffered.next_offset),
+    appwriteStatus: receivedEnd < Number(session.total_size) && pending.length < APPWRITE_CHUNK_SIZE ? 'waiting for 5 MiB provider chunk' : 'ready to send',
+  });
 
-  if (end === Number(session.total_size)) {
-    const updatedSession = { ...session, next_offset: end };
-    const file = await completeSession(db, config, updatedSession);
+  const advanced = await flushReadyAppwriteChunk(db, config, buffered);
+  if (Number(advanced.next_offset) === Number(session.total_size)) {
+    const file = await completeSession(db, config, advanced);
     return { status: 201, body: file };
   }
-  return { status: 200, body: { uploadSessionId: session.id, nextOffset: end, totalSize: session.total_size } };
+  return {
+    status: 200,
+    body: { uploadSessionId: advanced.id, nextOffset: Number(advanced.received_offset), totalSize: Number(advanced.total_size) },
+  };
 }
 
 async function cancelUpload(req, db, config, user) {

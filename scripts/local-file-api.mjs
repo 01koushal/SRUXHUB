@@ -25,9 +25,11 @@ export function localFileApi(envFile = {}) {
       }
 
       const uploadModule = pathToFileURL(resolve(server.config.root, 'api/files/upload.mjs')).href;
+      const directModule = pathToFileURL(resolve(server.config.root, 'api/files/direct.mjs')).href;
       const fileModule = pathToFileURL(resolve(server.config.root, 'api/files/[id].mjs')).href;
-      const [{ default: uploadHandler }, { default: fileHandler }] = await Promise.all([
+      const [{ default: uploadHandler }, { default: directHandler }, { default: fileHandler }] = await Promise.all([
         import(uploadModule),
+        import(directModule),
         import(fileModule),
       ]);
 
@@ -46,6 +48,8 @@ export function localFileApi(envFile = {}) {
 
         if (path === '/api/files/upload') {
           handler = uploadHandler;
+        } else if (path === '/api/files/direct') {
+          handler = directHandler;
         } else {
           const match = path.match(/^\/api\/files\/([^/]+)\/?$/);
           if (!match || match[1] === 'upload') {

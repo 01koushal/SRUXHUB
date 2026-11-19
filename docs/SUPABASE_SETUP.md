@@ -31,10 +31,12 @@ In Supabase **SQL Editor**, create a query for each file and run these in order:
 5. `supabase/migrations/005_complete_api_privileges.sql`
 6. `supabase/migrations/006_community_file_sharing.sql`
 7. `supabase/migrations/007_file_upload_sessions.sql`
+8. `supabase/migrations/008_appwrite_chunk_staging.sql`
+9. `supabase/migrations/009_direct_appwrite_uploads.sql`
 
-Run all seven on a fresh project before enabling sign-in. Migration 003 removes the legacy email-derived profile trigger, adds onboarding state and applies OAuth/domain restrictions to participation policies. It marks existing complete profiles as onboarded, but old non-Google identities remain unable to participate. Migration 004 grants public community/feed/profile reads and profile onboarding access. Migration 005 applies least-privilege API grants. Migration 006 increases the file size constraint, adds chunk upload sessions, a race-safe community checksum index, file votes and the immutable Google-name trigger; it preserves file rows and Appwrite objects. Migration 007 safely repairs the upload-session table and refreshes PostgREST's schema cache.
+Run all eight on a fresh project before enabling sign-in. Migration 003 removes the legacy email-derived profile trigger, adds onboarding state and applies OAuth/domain restrictions to participation policies. It marks existing complete profiles as onboarded, but old non-Google identities remain unable to participate. Migration 004 grants public community/feed/profile reads and profile onboarding access. Migration 005 applies least-privilege API grants. Migration 006 increases the file size constraint, adds chunk upload sessions, a race-safe community checksum index, file votes and the immutable Google-name trigger; it preserves file rows and Appwrite objects. Migration 007 safely repairs the upload-session table and refreshes PostgREST's schema cache. Migration 008 adds private staging fields so 3 MiB browser requests can be joined into Appwrite's required 5 MiB nonfinal chunks.
 
-For an existing database that already ran migrations 001–005, apply migrations 006 and 007 in order. If 006 was already applied, apply 007. Do not rerun earlier migrations and do not run `reset_and_rebuild.sql` for this upgrade; that script deletes application data.
+For an existing database that already ran migrations 001–005, apply migrations 006, 007 and 008 in order. If 006 and 007 were already applied, apply 008. Do not rerun earlier migrations and do not run `reset_and_rebuild.sql` for this upgrade; that script deletes application data.
 
 ### Optional development-only full reset
 
