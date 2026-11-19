@@ -1,9 +1,429 @@
+import { createHash, randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
-import { randomUUID } from 'node:crypto';
 
-export const config={api:{bodyParser:false,sizeLimit:'4mb'}};
-const maxBytes=4*1024*1024;
-const allowed=new Map([['image/jpeg','jpg'],['image/png','png'],['image/webp','webp'],['image/gif','gif'],['application/pdf','pdf'],['application/vnd.openxmlformats-officedocument.presentationml.presentation','pptx'],['application/vnd.ms-powerpoint','ppt'],['application/vnd.openxmlformats-officedocument.wordprocessingml.document','docx']]);
-function reply(res,status,body){res.statusCode=status;res.setHeader('Content-Type','application/json');res.end(JSON.stringify(body))}
-async function read(req){const chunks=[];let size=0;for await(const part of req){size+=part.length;if(size>maxBytes)throw new Error('File exceeds the 4 MB server upload limit');chunks.push(part)}return Buffer.concat(chunks)}
-export default async function handler(req,res){if(req.method!=='POST')return reply(res,405,{error:'Method not allowed'});try{const token=(req.headers.authorization||'').replace(/^Bearer\s+/i,'');if(!token)return reply(res,401,{error:'Sign in required'});const admin=createClient(process.env.SUPABASE_URL,process.env.SUPABASE_SERVICE_ROLE_KEY,{auth:{persistSession:false}});const{data:{user},error:authError}=await admin.auth.getUser(token);if(authError||!user)return reply(res,401,{error:'Invalid session'});if(user.app_metadata?.provider!=='google'||!user.email_confirmed_at||!(/^[^@]+@sru\.edu\.in$/i.test(user.email||'')))return reply(res,403,{error:'A verified @sru.edu.in Google account is required'});const{data:profile,error:profileError}=await admin.from('profiles').select('onboarding_complete').eq('user_id',user.id).maybeSingle();if(profileError){console.error('[api/files/upload] profile query failed:',profileError.message);return reply(res,500,{error:`Profile lookup failed: ${profileError.message}`})}if(!profile?.onboarding_complete)return reply(res,403,{error:'Complete your SRUXHUB profile first'});const communityId=String(req.headers['x-community-id']||'');const{data:membership,error:membershipError}=await admin.from('community_members').select('community_id').eq('community_id',communityId).eq('user_id',user.id).maybeSingle();if(membershipError){console.error('[api/files/upload] membership query failed:',membershipError.message);return reply(res,500,{error:`Membership lookup failed: ${membershipError.message}`})}if(!membership)return reply(res,403,{error:'Join this community before uploading'});const mime=String(req.headers['content-type']||'').split(';')[0].toLowerCase();const ext=allowed.get(mime);const name=decodeURIComponent(String(req.headers['x-file-name']||'upload')).replace(/[\\/\0-\x1f]/g,'_').slice(0,180);if(!ext||!name.toLowerCase().endsWith(`.${ext}`))return reply(res,415,{error:'File type and extension are not allowed'});const bytes=await read(req);if(!bytes.length)return reply(res,400,{error:'Empty file'});if(mime==='application/pdf'&&bytes.subarray(0,5).toString()!=='%PDF-')return reply(res,415,{error:'File content does not match PDF type'});if(mime==='image/png'&&bytes.subarray(0,8).toString('hex')!=='89504e470d0a1a0a')return reply(res,415,{error:'File content does not match PNG type'});if(mime==='image/jpeg'&&!(bytes[0]===255&&bytes[1]===216))return reply(res,415,{error:'File content does not match JPEG type'});const endpoint=process.env.APPWRITE_ENDPOINT,project=process.env.APPWRITE_PROJECT_ID,bucket=process.env.APPWRITE_BUCKET_ID,key=process.env.APPWRITE_API_KEY;if(!endpoint||!project||!bucket||!key)return reply(res,503,{error:'Appwrite storage is not configured'});const fileId=randomUUID();const form=new FormData();form.append('fileId',fileId);form.append('file',new Blob([bytes],{type:mime}),name);const stored=await fetch(`${endpoint.replace(/\/$/,'')}/storage/buckets/${encodeURIComponent(bucket)}/files`,{method:'POST',headers:{'X-Appwrite-Project':project,'X-Appwrite-Key':key},body:form});if(!stored.ok){let providerMessage='';try{const providerError=await stored.json();providerMessage=typeof providerError.message==='string'?providerError.message:''}catch{}console.error('[api/files/upload] Appwrite rejected upload:',{status:stored.status,message:providerMessage||'No provider error body'});return reply(res,502,{error:providerMessage?`Appwrite upload failed: ${providerMessage}`:`Appwrite upload failed (HTTP ${stored.status})`})}const metadata={owner_id:user.id,community_id:communityId,storage_provider:'appwrite',storage_file_id:fileId,storage_bucket_id:bucket,original_filename:name,mime_type:mime,file_size:bytes.length,category:mime.startsWith('image/')?'image':'resource',visibility:'community'};const{data,error}=await admin.from('files').insert(metadata).select('id,original_filename,mime_type,file_size,storage_provider').single();if(error){console.error('[api/files/upload] Supabase metadata insert failed:',error.message);await fetch(`${endpoint.replace(/\/$/,'')}/storage/buckets/${encodeURIComponent(bucket)}/files/${fileId}`,{method:'DELETE',headers:{'X-Appwrite-Project':project,'X-Appwrite-Key':key}});return reply(res,500,{error:process.env.NODE_ENV==='production'?'Could not save file metadata':`Could not save file metadata: ${error.message}`})}return reply(res,201,{id:data.id,name:data.original_filename,mimeType:data.mime_type,size:data.file_size,provider:data.storage_provider})}catch(error){const message=error instanceof Error?error.message:String(error);console.error('[api/files/upload] request failed:',message);return reply(res,message.includes('4 MB')?413:400,{error:message||'Upload failed'})}}
+export const config = { api: { bodyParser: false, sizeLimit: '4mb' } };
+
+const MAX_FILE_SIZE = 25 * 1024 * 1024;
+const MAX_CHUNK_SIZE = 3 * 1024 * 1024;
+const SESSION_MAX_AGE = 24 * 60 * 60 * 1000;
+const allowedTypes = new Map([
+  ['image/jpeg', 'jpg'],
+  ['image/png', 'png'],
+  ['image/webp', 'webp'],
+  ['image/gif', 'gif'],
+  ['application/pdf', 'pdf'],
+  ['application/vnd.openxmlformats-officedocument.presentationml.presentation', 'pptx'],
+  ['application/vnd.ms-powerpoint', 'ppt'],
+  ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'docx'],
+  ['application/zip', 'zip'],
+  ['application/x-zip-compressed', 'zip'],
+]);
+
+function reply(res, status, body) {
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'application/json');
+  res.end(JSON.stringify(body));
+}
+
+function requestError(status, message, extra = {}) {
+  return Object.assign(new Error(message), { status, extra });
+}
+
+function missingUploadSessionTable(error) {
+  return error?.code === 'PGRST205' || error?.code === '42P01';
+}
+
+async function readChunk(req) {
+  const chunks = [];
+  let size = 0;
+  for await (const part of req) {
+    size += part.length;
+    if (size > MAX_CHUNK_SIZE) throw requestError(413, 'Upload chunks cannot exceed 3 MB.');
+    chunks.push(part);
+  }
+  if (!size) throw requestError(400, 'Upload chunk is empty.');
+  return Buffer.concat(chunks);
+}
+
+function allowedFile(name, mime, bytes, isFirstChunk) {
+  const extension = allowedTypes.get(mime);
+  if (!extension || !name.toLowerCase().endsWith(`.${extension}`)) {
+    throw requestError(415, 'File type and extension are not allowed.');
+  }
+  if (!isFirstChunk) return;
+  if (mime === 'application/pdf' && bytes.subarray(0, 5).toString() !== '%PDF-') {
+    throw requestError(415, 'File content does not match PDF type.');
+  }
+  if (mime === 'image/png' && bytes.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') {
+    throw requestError(415, 'File content does not match PNG type.');
+  }
+  if (mime === 'image/jpeg' && !(bytes[0] === 0xff && bytes[1] === 0xd8)) {
+    throw requestError(415, 'File content does not match JPEG type.');
+  }
+  if (mime === 'application/zip' || mime === 'application/x-zip-compressed') {
+    const signature = bytes.subarray(0, 4).toString('hex');
+    if (!['504b0304', '504b0506', '504b0708'].includes(signature)) {
+      throw requestError(415, 'File content does not match ZIP type.');
+    }
+  }
+}
+
+function readFilename(value) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(String(value || ''));
+  } catch {
+    throw requestError(400, 'Invalid filename encoding.');
+  }
+  const name = decoded.replace(/[\\/\0-\x1f]/g, '_').trim().slice(0, 180);
+  if (!name || name === '.' || name === '..') throw requestError(400, 'A filename is required.');
+  return name;
+}
+
+function createAdmin() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) throw requestError(503, 'Supabase server access is not configured.');
+  return createClient(url, key, { auth: { persistSession: false } });
+}
+
+async function authenticate(req, db) {
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (!token) throw requestError(401, 'Sign in required.');
+  const { data: { user }, error } = await db.auth.getUser(token);
+  if (error || !user) throw requestError(401, 'Invalid session.');
+  if (user.app_metadata?.provider !== 'google' || !user.email_confirmed_at ||
+      !/^[^@]+@sru\.edu\.in$/i.test(user.email || '')) {
+    throw requestError(403, 'A verified @sru.edu.in Google account is required.');
+  }
+
+  const { data: profile, error: profileError } = await db.from('profiles')
+    .select('onboarding_complete').eq('user_id', user.id).maybeSingle();
+  if (profileError) {
+    console.error('[api/files/upload] profile lookup failed:', profileError.message);
+    throw requestError(500, 'Could not verify your SRUXHUB profile.');
+  }
+  if (!profile?.onboarding_complete) throw requestError(403, 'Complete your SRUXHUB profile first.');
+  return user;
+}
+
+async function assertCommunityMember(db, communityId, userId) {
+  if (!communityId) throw requestError(400, 'Choose a community for this upload.');
+  const { data, error } = await db.from('community_members')
+    .select('community_id').eq('community_id', communityId).eq('user_id', userId).maybeSingle();
+  if (error) {
+    console.error('[api/files/upload] membership lookup failed:', error.message);
+    throw requestError(500, 'Could not verify community membership.');
+  }
+  if (!data) throw requestError(403, 'Join this community before uploading.');
+}
+
+function storageConfig() {
+  const endpoint = process.env.APPWRITE_ENDPOINT;
+  const project = process.env.APPWRITE_PROJECT_ID;
+  const key = process.env.APPWRITE_API_KEY;
+  const bucket = process.env.APPWRITE_BUCKET_ID;
+  if (!endpoint || !project || !key || !bucket) throw requestError(503, 'Appwrite storage is not configured.');
+  return { endpoint: endpoint.replace(/\/$/, ''), project, key, bucket };
+}
+
+async function appwriteRequest(config, fileId, bytes, range, name, mime) {
+  const form = new FormData();
+  form.append('fileId', fileId);
+  form.append('file', new Blob([bytes], { type: mime }), name);
+  const headers = {
+    'X-Appwrite-Project': config.project,
+    'X-Appwrite-Key': config.key,
+  };
+  if (range) {
+    headers['X-Appwrite-ID'] = fileId;
+    headers['Content-Range'] = range;
+  }
+  const result = await fetch(`${config.endpoint}/storage/buckets/${encodeURIComponent(config.bucket)}/files`, {
+    method: 'POST',
+    headers,
+    body: form,
+  });
+  if (!result.ok) {
+    let message = '';
+    try {
+      const body = await result.json();
+      message = typeof body.message === 'string' ? body.message : '';
+    } catch { /* Provider may return an empty response. */ }
+    console.error('[api/files/upload] Appwrite chunk rejected:', {
+      status: result.status,
+      message: message || 'No provider error body',
+    });
+    throw requestError(502, message || `Appwrite upload failed (HTTP ${result.status}).`);
+  }
+}
+
+async function deleteStoredFile(config, fileId) {
+  try {
+    const result = await fetch(`${config.endpoint}/storage/buckets/${encodeURIComponent(config.bucket)}/files/${encodeURIComponent(fileId)}`, {
+      method: 'DELETE',
+      headers: { 'X-Appwrite-Project': config.project, 'X-Appwrite-Key': config.key },
+    });
+    if (result.ok || result.status === 404) return true;
+    console.error('[api/files/upload] Appwrite cleanup failed:', { status: result.status, fileId });
+  } catch (error) {
+    console.error('[api/files/upload] Appwrite cleanup request failed:', error instanceof Error ? error.message : 'Unknown error');
+  }
+  return false;
+}
+
+async function cleanupSession(db, config, session) {
+  const { data: published, error: lookupError } = await db.from('files')
+    .select('id').eq('storage_file_id', session.storage_file_id).eq('status', 'published').maybeSingle();
+  if (lookupError) {
+    console.error('[api/files/upload] cleanup metadata lookup failed:', lookupError.message);
+    return false;
+  }
+  if (published) {
+    const { error } = await db.from('file_upload_sessions').delete().eq('id', session.id);
+    if (error) console.error('[api/files/upload] completed session cleanup failed:', error.message);
+    return !error;
+  }
+  if (!await deleteStoredFile(config, session.storage_file_id)) return false;
+  const { error } = await db.from('file_upload_sessions').delete().eq('id', session.id);
+  if (error) console.error('[api/files/upload] upload session cleanup failed:', error.message);
+  return !error;
+}
+
+async function cleanupExpiredSessions(db, config) {
+  const cutoff = new Date(Date.now() - SESSION_MAX_AGE).toISOString();
+  const { data, error } = await db.from('file_upload_sessions')
+    .select('id,storage_file_id').lt('created_at', cutoff).limit(20);
+  if (error) {
+    console.error('[api/files/upload] expired session lookup failed:', error.message);
+    return;
+  }
+  for (const session of data || []) await cleanupSession(db, config, session);
+}
+
+async function hashStoredFile(config, fileId) {
+  const response = await fetch(`${config.endpoint}/storage/buckets/${encodeURIComponent(config.bucket)}/files/${encodeURIComponent(fileId)}/download`, {
+    headers: { 'X-Appwrite-Project': config.project, 'X-Appwrite-Key': config.key },
+  });
+  if (!response.ok || !response.body) {
+    console.error('[api/files/upload] Appwrite checksum download failed:', { status: response.status, fileId });
+    throw requestError(502, 'Could not verify the stored file.');
+  }
+  const hash = createHash('sha256');
+  let size = 0;
+  for await (const chunk of response.body) {
+    size += chunk.length;
+    hash.update(chunk);
+  }
+  return { sha256: hash.digest('hex'), size };
+}
+
+function clientFile(file) {
+  return {
+    id: file.id,
+    name: file.original_filename,
+    mimeType: file.mime_type,
+    size: Number(file.file_size),
+    provider: file.storage_provider,
+    communityId: file.community_id,
+    uploaderId: file.owner_id,
+    uploadedAt: file.created_at,
+  };
+}
+
+async function completeSession(db, config, session) {
+  const { sha256, size } = await hashStoredFile(config, session.storage_file_id);
+  if (size !== Number(session.total_size)) throw requestError(502, 'Stored file size does not match the upload.');
+
+  const duplicateResult = await db.from('files')
+    .select('id,original_filename,mime_type,file_size,storage_provider,community_id,owner_id,created_at')
+    .eq('community_id', session.community_id).eq('sha256', sha256)
+    .eq('status', 'published').maybeSingle();
+  if (duplicateResult.error) throw requestError(500, 'Could not check for duplicate file content.');
+  if (duplicateResult.data) {
+    await cleanupSession(db, config, session);
+    throw requestError(409, 'This exact file has already been shared in this community.', {
+      existingFile: clientFile(duplicateResult.data),
+    });
+  }
+
+  const { data: file, error } = await db.from('files').insert({
+    owner_id: session.owner_id,
+    community_id: session.community_id,
+    storage_provider: 'appwrite',
+    storage_file_id: session.storage_file_id,
+    storage_bucket_id: config.bucket,
+    original_filename: session.original_filename,
+    mime_type: session.mime_type,
+    file_size: size,
+    sha256,
+    category: session.mime_type.startsWith('image/') ? 'image' : 'resource',
+    visibility: 'community',
+  }).select('id,original_filename,mime_type,file_size,storage_provider,community_id,owner_id,created_at').single();
+
+  if (error) {
+    // The database index is the final guard when identical uploads finish together.
+    if (error.code === '23505') {
+      const duplicate = await db.from('files')
+        .select('id,original_filename,mime_type,file_size,storage_provider,community_id,owner_id,created_at')
+        .eq('community_id', session.community_id).eq('sha256', sha256)
+        .eq('status', 'published').maybeSingle();
+      await cleanupSession(db, config, session);
+      if (duplicate.data) {
+        throw requestError(409, 'This exact file has already been shared in this community.', {
+          existingFile: clientFile(duplicate.data),
+        });
+      }
+    }
+    console.error('[api/files/upload] Supabase metadata insert failed:', error.message);
+    await cleanupSession(db, config, session);
+    throw requestError(500, 'Could not save file metadata.');
+  }
+
+  const { error: sessionError } = await db.from('file_upload_sessions').delete().eq('id', session.id);
+  if (sessionError) console.error('[api/files/upload] completed session cleanup failed:', sessionError.message);
+  return clientFile(file);
+}
+
+async function startUpload(req, db, config, user) {
+  const communityId = String(req.headers['x-community-id'] || '');
+  await assertCommunityMember(db, communityId, user.id);
+  const name = readFilename(req.headers['x-file-name']);
+  const mime = String(req.headers['x-file-mime'] || '').split(';')[0].toLowerCase();
+  const totalSize = Number(req.headers['x-file-size']);
+  if (!Number.isInteger(totalSize) || totalSize <= 0 || totalSize > MAX_FILE_SIZE) {
+    throw requestError(413, 'Maximum file size is 25 MB.');
+  }
+  const bytes = await readChunk(req);
+  if (bytes.length > totalSize) throw requestError(400, 'Upload chunk exceeds the declared file size.');
+  allowedFile(name, mime, bytes, true);
+
+  const fileId = randomUUID();
+  const { data: session, error } = await db.from('file_upload_sessions').insert({
+    owner_id: user.id,
+    community_id: communityId,
+    storage_file_id: fileId,
+    original_filename: name,
+    mime_type: mime,
+    total_size: totalSize,
+    // Persist only confirmed bytes after Appwrite accepts the first chunk.
+    // The session must begin at offset zero so the guarded advance below works.
+    next_offset: 0,
+  }).select('*').single();
+  if (error) {
+    console.error('[api/files/upload] upload session create failed:', error.message);
+    if (missingUploadSessionTable(error)) {
+      throw requestError(503, 'File uploads are not enabled in this database yet. Apply migrations 006 and 007, then retry.');
+    }
+    throw requestError(500, 'Could not start the file upload.');
+  }
+
+  try {
+    const range = bytes.length < totalSize ? `bytes 0-${bytes.length - 1}/${totalSize}` : undefined;
+    await appwriteRequest(config, fileId, bytes, range, name, mime);
+  } catch (error) {
+    await cleanupSession(db, config, session);
+    throw error;
+  }
+  const { data: advanced, error: offsetError } = await db.from('file_upload_sessions')
+    .update({ next_offset: bytes.length, updated_at: new Date().toISOString() })
+    .eq('id', session.id).eq('next_offset', 0).select('*').single();
+  if (offsetError || !advanced) {
+    console.error('[api/files/upload] initial upload offset update failed:', offsetError?.message || 'Session was not updated');
+    await cleanupSession(db, config, session);
+    throw requestError(500, 'Could not advance the upload session. Start the upload again.');
+  }
+
+  if (bytes.length === totalSize) {
+    const file = await completeSession(db, config, advanced);
+    return { status: 201, body: file };
+  }
+  return { status: 200, body: { uploadSessionId: advanced.id, nextOffset: bytes.length, totalSize } };
+}
+
+async function continueUpload(req, db, config, user) {
+  const id = String(req.headers['x-upload-session'] || '');
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw requestError(400, 'Upload session is invalid.');
+  const { data: session, error } = await db.from('file_upload_sessions').select('*')
+    .eq('id', id).eq('owner_id', user.id).maybeSingle();
+  if (error) throw requestError(500, 'Could not load the upload session.');
+  if (!session) throw requestError(404, 'Upload session expired. Start the upload again.');
+  if (Date.now() - Date.parse(session.created_at) >= SESSION_MAX_AGE) {
+    await cleanupSession(db, config, session);
+    throw requestError(410, 'Upload session expired. Select the file again to restart.');
+  }
+  await assertCommunityMember(db, session.community_id, user.id);
+
+  const declaredSize = Number(req.headers['x-file-size']);
+  if (declaredSize !== Number(session.total_size) ||
+      readFilename(req.headers['x-file-name']) !== session.original_filename ||
+      String(req.headers['x-file-mime'] || '') !== session.mime_type) {
+    throw requestError(400, 'Upload metadata changed during transfer.');
+  }
+
+  const bytes = await readChunk(req);
+  const start = Number(session.next_offset);
+  const end = start + bytes.length;
+  if (end > Number(session.total_size)) throw requestError(400, 'Upload chunk exceeds the declared file size.');
+  allowedFile(session.original_filename, session.mime_type, bytes, false);
+  await appwriteRequest(config, session.storage_file_id, bytes,
+    `bytes ${start}-${end - 1}/${session.total_size}`,
+    session.original_filename, session.mime_type);
+
+  const { data: advanced, error: updateError } = await db.from('file_upload_sessions')
+    .update({ next_offset: end, updated_at: new Date().toISOString() })
+    .eq('id', session.id).eq('next_offset', start).select('id').maybeSingle();
+  if (updateError || !advanced) {
+    console.error('[api/files/upload] upload session offset update failed:', updateError?.message || 'Session offset changed concurrently');
+    throw requestError(500, 'Could not advance the upload session. Retry this chunk.');
+  }
+
+  if (end === Number(session.total_size)) {
+    const updatedSession = { ...session, next_offset: end };
+    const file = await completeSession(db, config, updatedSession);
+    return { status: 201, body: file };
+  }
+  return { status: 200, body: { uploadSessionId: session.id, nextOffset: end, totalSize: session.total_size } };
+}
+
+async function cancelUpload(req, db, config, user) {
+  const id = String(req.headers['x-upload-session'] || '');
+  const { data: session, error } = await db.from('file_upload_sessions').select('*')
+    .eq('id', id).eq('owner_id', user.id).maybeSingle();
+  if (error) throw requestError(500, 'Could not load the upload session.');
+  if (session) await cleanupSession(db, config, session);
+  return { status: 200, body: { cancelled: true } };
+}
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return reply(res, 405, { error: 'Method not allowed.' });
+  if (!(req.headers.authorization || '').replace(/^Bearer\s+/i, '')) {
+    return reply(res, 401, { error: 'Sign in required.' });
+  }
+  let db;
+  let config;
+  let session;
+  try {
+    db = createAdmin();
+    config = storageConfig();
+    const user = await authenticate(req, db);
+    const action = String(req.headers['x-upload-action'] || 'start');
+    let result;
+    if (action === 'start') {
+      await cleanupExpiredSessions(db, config);
+      result = await startUpload(req, db, config, user);
+    } else if (action === 'chunk') {
+      result = await continueUpload(req, db, config, user);
+    } else if (action === 'cancel') {
+      result = await cancelUpload(req, db, config, user);
+    } else {
+      throw requestError(400, 'Unknown upload action.');
+    }
+    return reply(res, result.status, result.body);
+  } catch (error) {
+    const status = Number.isInteger(error?.status) ? error.status : 500;
+    const message = error instanceof Error ? error.message : 'Upload failed.';
+    if (status >= 500) console.error('[api/files/upload] request failed:', message);
+    return reply(res, status, { error: message, ...(error?.extra || {}) });
+  }
+}

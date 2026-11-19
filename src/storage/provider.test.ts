@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AppwriteStorageProvider, parseUploadResponse } from './provider';
+import { AppwriteStorageProvider, FileUploadError, MAX_UPLOAD_BYTES, parseUploadResponse } from './provider';
 
 describe('upload response handling', () => {
   it('accepts the metadata shape returned by the upload API', () => {
@@ -25,7 +25,21 @@ describe('upload response handling', () => {
 
   it('rejects files above the server limit before opening a request', async () => {
     const provider = new AppwriteStorageProvider();
-    await expect(provider.upload({ size: 4 * 1024 * 1024 + 1 } as File, 'community', 'token'))
-      .rejects.toThrow('File exceeds the 4 MB upload limit.');
+    await expect(provider.upload({ size: MAX_UPLOAD_BYTES + 1 } as File, 'community', 'token'))
+      .rejects.toThrow('Maximum file size is 25 MB.');
+  });
+
+  it('returns the existing file details with an exact-content conflict', () => {
+    let result: unknown;
+    try {
+      parseUploadResponse(JSON.stringify({
+        error: 'This exact file has already been shared in this community.',
+        existingFile: { id: 'same-file', name: 'paper.pdf', mimeType: 'application/pdf', size: 500, provider: 'appwrite' },
+      }), 409);
+    } catch (error) {
+      result = error;
+    }
+    expect(result).toBeInstanceOf(FileUploadError);
+    expect(result).toMatchObject({ existingFile: { id: 'same-file', name: 'paper.pdf' } });
   });
 });

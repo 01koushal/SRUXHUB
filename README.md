@@ -6,7 +6,7 @@ A community platform for SR University students. This repository contains a Reac
 
 1. Install Node.js 20.19+ or 22.12+ (Vite 8 requirement).
 2. Run `npm install`.
-3. Copy `.env.example` to `.env.local` and add the Supabase URL and publishable key.
+3. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` for browser code. Put Supabase service-role and Appwrite values in the ignored local `.env` or `.env.local`; never prefix server secrets with `VITE_`.
 4. Apply the SQL migrations in `supabase/migrations/` in filename order using Supabase SQL Editor.
 5. Run `npm run dev` and open the URL printed by Vite.
 
@@ -14,4 +14,4 @@ Without credentials the app shows honest setup and empty states; it does not inv
 
 ## Current scope
 
-Implemented foundation: responsive light/dark shell, Supabase Google OAuth with SRU-domain checks and explicit username/display-name onboarding, database-driven feed/search, communities and membership, post creation/detail, comments, voting, saved posts, file library uploads through authenticated Vercel endpoints, Appwrite storage abstraction, initial communities, SQL policies and setup documentation. Profile avatars, report/moderation tools, post attachment composition, full pagination and live integration verification remain before production; see [known gaps](docs/DEVELOPMENT.md#known-gaps). This is not yet ready to advertise as a complete production platform.
+Implemented foundation: SRUX blue/white responsive UI, Supabase Google OAuth with SRU-domain checks, username onboarding and immutable Google display names, community Posts/Files/About tabs, profile activity, file search/sorting/voting, ZIP support and chunked 25 MiB uploads through Vercel-compatible handlers. Apply migrations 006 and 007 for upload sessions, SHA-256 deduplication, file votes and profile-name enforcement. Live Supabase, Appwrite and Vercel integration verification is still required; see [Development](docs/DEVELOPMENT.md).

@@ -18,7 +18,7 @@ Follow the [Supabase Google provider guide](https://supabase.com/docs/guides/aut
 5. In Supabase **Authentication → URL Configuration**, set Site URL to `https://hub.srux.in`. Add `http://localhost:5173/**`, `https://hub.srux.in/**`, and the exact preview origins/patterns you use to the redirect allow list. The app sends the current site origin as `redirectTo`; Supabase only redirects to allowed URLs.
 6. Disable the **Email** sign-in provider for this project. Keep Google as the only enabled interactive provider. Do not rely on Google’s `hd` parameter as access control: SRUXHUB and its database policies independently check the authenticated Google provider and exact `@sru.edu.in` domain.
 
-The browser client persists sessions, refreshes them, and detects OAuth credentials on the redirect URL. Users choose a username and display name after their first eligible Google sign-in. A case-insensitive database uniqueness constraint rejects a taken username and asks the user to choose another; the app never silently invents a replacement.
+The browser client persists sessions, refreshes them, and detects OAuth credentials on the redirect URL. Users choose a username after their first eligible Google sign-in. The display name is taken from Google and is immutable in the profile UI and database. A case-insensitive database uniqueness constraint rejects a taken username and asks the user to choose another; the app never silently invents a replacement.
 
 ## 3. Apply SQL migrations
 
@@ -29,10 +29,12 @@ In Supabase **SQL Editor**, create a query for each file and run these in order:
 3. `supabase/migrations/003_google_oauth_onboarding.sql`
 4. `supabase/migrations/004_api_read_and_onboarding_grants.sql`
 5. `supabase/migrations/005_complete_api_privileges.sql`
+6. `supabase/migrations/006_community_file_sharing.sql`
+7. `supabase/migrations/007_file_upload_sessions.sql`
 
-Run all five before enabling sign-in. Migration 003 removes the legacy email-derived profile trigger, adds onboarding state and applies OAuth/domain restrictions to participation policies. It marks existing complete profiles as onboarded, but old non-Google identities remain unable to participate. Migration 004 grants public community/feed/profile reads and the profile privileges needed for onboarding. Migration 005 resets API privileges for SRUXHUB tables to a least-privilege set, enables community/post/comment operations, private membership reads and admin role changes, saves, notifications, eligible file metadata reads, and restricted report submission/review. RLS still controls the rows and ownership. It also removes public membership visibility and unintended broad table privileges.
+Run all seven on a fresh project before enabling sign-in. Migration 003 removes the legacy email-derived profile trigger, adds onboarding state and applies OAuth/domain restrictions to participation policies. It marks existing complete profiles as onboarded, but old non-Google identities remain unable to participate. Migration 004 grants public community/feed/profile reads and profile onboarding access. Migration 005 applies least-privilege API grants. Migration 006 increases the file size constraint, adds chunk upload sessions, a race-safe community checksum index, file votes and the immutable Google-name trigger; it preserves file rows and Appwrite objects. Migration 007 safely repairs the upload-session table and refreshes PostgREST's schema cache.
 
-For an existing database that already ran migrations 001–004, apply only migration 005. Do not rerun 001–004 over existing tables; use the development reset script only if you intentionally want to delete and rebuild all SRUXHUB application data.
+For an existing database that already ran migrations 001–005, apply migrations 006 and 007 in order. If 006 was already applied, apply 007. Do not rerun earlier migrations and do not run `reset_and_rebuild.sql` for this upgrade; that script deletes application data.
 
 ### Optional development-only full reset
 
@@ -44,9 +46,9 @@ CLI alternative: use Supabase CLI migrations in a linked project if your team ha
 
 ## 4. Verify configuration
 
-1. Confirm the tables exist: `profiles`, `communities`, `community_members`, `posts`, `files`, `post_attachments`, `comments`, `votes`, `saved_posts`, `notifications`, and `reports`.
+1. Confirm the tables exist: `profiles`, `communities`, `community_members`, `posts`, `files`, `file_upload_sessions`, `file_votes`, `post_attachments`, `comments`, `votes`, `saved_posts`, `notifications`, and `reports`.
 2. Confirm RLS is enabled. Migration 003 provides `is_sru_google()` and `has_completed_onboarding()` checks for protected writes; public feed/community reads stay available without login.
-3. Start the app with `npm run dev`, select **Continue with Google**, and sign in with a verified `@sru.edu.in` account. Complete onboarding with an available username and display name. Sign out and sign in again to confirm the profile and session return.
+3. Start the app with `npm run dev`, select **Continue with Google**, and sign in with a verified `@sru.edu.in` account. Complete onboarding with an available username; the profile uses the Google display name. Sign out and sign in again to confirm the profile and session return.
 4. Try a non-SRU Google account: Supabase may complete provider authentication, but SRUXHUB signs that session out and returns to public browsing. Database policies also deny protected writes for wrong-domain users or identities from another provider.
 5. Check Auth URL allow list, Google callback URL, client ID/secret, browser origins, and provider status if OAuth returns an error. Never add service-role credentials to `VITE_` variables.
 

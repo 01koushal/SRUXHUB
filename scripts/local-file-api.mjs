@@ -19,7 +19,6 @@ export function localFileApi(envFile = {}) {
       for (const key of serverEnvironmentKeys) {
         if (!process.env[key] && envFile[key]) process.env[key] = envFile[key];
       }
-
       const missing = serverEnvironmentKeys.filter(key => !process.env[key]);
       if (missing.length) {
         server.config.logger.warn(`Local file API is missing server variables: ${missing.join(', ')}`);

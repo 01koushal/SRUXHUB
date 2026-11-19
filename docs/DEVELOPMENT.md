@@ -6,26 +6,26 @@
 npm install
 npm run dev
 npm run typecheck
+npm test
 npm run build
 ```
 
-Put the browser Supabase values (`VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`) and server values in your ignored local `.env` file. Vite loads `.env` and the mode-specific `.env.*` files for local development. The local file API reads only the server-side allowlist (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `APPWRITE_*`) in Node; never prefix these secrets with `VITE_` or commit a local env file.
+Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` for browser code. Put server-only `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `APPWRITE_*` values in an ignored local `.env` or `.env.local`. Vite's development adapter reads only its server-side allowlist into Node; never prefix secrets with `VITE_` or commit local env files.
 
-Run `npm run dev` to start the frontend and local file API together. Vite's development-only middleware forwards `/api/files/upload` and `/api/files/:id` to the existing handlers in `api/files`. The handlers keep Appwrite storage and Supabase metadata behavior. Production builds do not include this middleware; Vercel continues to serve those same `/api/files/*` handlers.
+`npm run dev` starts the Vite frontend and mounts `/api/files/upload` and `/api/files/:id` to the existing handlers. That adapter applies only to the development server. Production still uses the same `/api/files/*` Vercel handlers.
 
 ## Structure
 
-- `src/features/auth`: Supabase session provider and email auth.
-- `src/features/posts/service.ts`: feed, create-post, and vote repository calls.
-- `src/features/communities/service.ts`: community and membership repository calls.
-- `src/lib`: shared backend clients.
-- `supabase/migrations`: schema, security functions, RLS and initial community seed.
-- `api`: server-only Vercel endpoints, also mounted by the Vite development middleware (keep Appwrite credentials server-side).
+- `src/features/auth`: Supabase session provider, Google OAuth and profile onboarding.
+- `src/features/posts/service.ts`: feed, create-post, vote and comment calls.
+- `src/features/communities`: community browsing, membership and tabs.
+- `src/features/files`: file listing, search, upload UI, preview and file votes.
+- `src/storage/provider.ts`: chunked upload client and authenticated file API calls.
+- `supabase/migrations`: schema, security functions, RLS and data migrations.
+- `api`: server-only Vercel endpoints, also mounted by development-only Vite middleware.
 
-## Known gaps before production
+## Current implementation and verification limits
 
-The starter avoids fabricated content. Working paths include public browsing, Google OAuth, exact SRU-domain/provider checks, profile onboarding, community discovery/join/leave, post creation/detail, top-level comments and replies display, voting RPC, save/unsave, post search, and file upload/download/delete through authenticated server functions. Still needed: avatar flow, report/admin moderation, attachment composition/linking from the post editor, comment reply/edit/delete controls, dedicated file search/categories, cursor pagination, share action, stronger file signatures/virus checks and broader automated browser/integration tests. SQL and Google OAuth have not been exercised against live credentials. Test on disposable services, inspect policies and verify eligible and ineligible accounts before production.
+The UI uses SRUX blue and white, a responsive desktop/mobile shell and the supplied SRUX logo. Community pages have Posts, Files and About tabs. Profiles show the Google display name as read-only, allow username/bio changes and display community/post/file counts. Community files support exact-name warnings, database-backed SHA-256 duplicate blocking, search, newest/most-upvoted sorting, file upvotes, previews, downloads and owner deletion. Uploads are limited to 25 MiB, allow ZIP, and travel as 3 MiB chunks through the Vercel-compatible handler. The server hashes the completed Appwrite object and publishes Supabase metadata only after the duplicate check.
 
-## Auth UX reference
-
-The supplied Lost & Found archive was inspected. SRUXHUB follows its Google sign-in button, account chooser, persisted Supabase session, redirect handling, and explicit “keep browsing” path. SRUXHUB uses its own post-login profile onboarding and RLS rules.
+Unit and local route tests use mocked Supabase and Appwrite responses. They do not prove behavior against live OAuth, database policies, Appwrite bucket settings or Vercel. Apply migrations 006 and 007 before testing those integrations. Malware scanning, report/admin moderation and post attachment composition remain unimplemented.
