@@ -7,6 +7,7 @@ import { FILE_PAGE_SIZE, findExactFilename, listFiles } from './service';
 import { FileCard, formatSize } from './FileCard';
 import { MAX_UPLOAD_BYTES, storageProvider, type StoredFile } from '../../storage/provider';
 import { useParams } from 'react-router-dom';
+import { FileViewer } from './FileViewer';
 
 type PendingDuplicate = { file: File; existing: StoredFile; contentDuplicate: boolean; remaining: File[] };
 
@@ -15,6 +16,7 @@ export function FileOpenPage() {
   const { session, canParticipate, loading, profileLoading } = useAuth();
   const navigate = useNavigate();
   const [error, setError] = useState('');
+  const [metadata, setMetadata] = useState<{name:string;mimeType:string;size:number}|null>(null);
   useEffect(() => {
     if (loading || profileLoading) return;
     const target = `${window.location.pathname}${window.location.search}`;
@@ -27,13 +29,13 @@ export function FileOpenPage() {
     void fetch(`/api/files/${encodeURIComponent(id)}`, { method: 'POST', headers: { Authorization: `Bearer ${session.access_token}` } })
       .then(async response => {
         if (!response.ok) throw new Error(await fileApiError(response));
-        const download = new URLSearchParams(window.location.search).get('download') === '1';
-        const inline = new URLSearchParams(window.location.search).get('inline') !== '0';
-        window.location.replace(`/api/files/${encodeURIComponent(id)}?${download ? 'download=1' : inline ? 'inline=1' : 'download=1'}`);
+        const meta = await fetch(`/api/files/${encodeURIComponent(id)}?metadata=1`, { headers: { Authorization: `Bearer ${session.access_token}` } });
+        if (!meta.ok) throw new Error(await fileApiError(meta));
+        if (active) setMetadata(await meta.json());
       }).catch(cause => { if (active) setError(cause instanceof Error ? cause.message : 'This file is unavailable.'); });
     return () => { active = false; };
   }, [id, session, canParticipate, loading, profileLoading, navigate]);
-  return <div className="empty" role={error ? 'alert' : 'status'}><FileText/><h2>{error ? 'File access unavailable' : 'Preparing secure file access'}</h2><p>{error || 'Checking your SRUXHUB account and community membership…'}</p>{error && <Link to="/files">Return to files</Link>}</div>;
+  return <FileViewer id={id} metadata={metadata} error={error} />;
 }
 
 async function fileApiError(response: Response) { try { const body = await response.json() as { error?: string }; return body.error || `File unavailable (HTTP ${response.status}).`; } catch { return `File unavailable (HTTP ${response.status}).`; } }

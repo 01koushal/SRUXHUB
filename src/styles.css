@@ -398,6 +398,48 @@ html[data-theme='dark'] {
 .search-community-result button { flex: 0 0 auto; }
 .file-notice { margin-top: 6px; color: var(--muted); font-size: 12px; }
 .file-actions .primary.icon-action { display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; text-decoration: none; }
+.file-card { cursor: pointer; }
+.file-card:focus-visible { outline: 3px solid #8bbaf0; outline-offset: 2px; }
+.file-menu { position: relative; }
+.file-menu summary { list-style: none; cursor: pointer; }
+.file-menu summary::-webkit-details-marker { display: none; }
+.file-menu-pop { position: absolute; z-index: 25; top: calc(100% + 5px); right: 0; width: 190px; display: grid; padding: 5px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); box-shadow: var(--shadow); }
+.file-menu-pop button, .file-menu-pop a { display: flex; align-items: center; gap: 8px; padding: 9px; border: 0; border-radius: 6px; color: var(--text); background: transparent; text-align: left; font: inherit; font-size: 11px; text-decoration: none; cursor: pointer; }
+.file-menu-pop button:hover, .file-menu-pop a:hover { background: var(--soft); }
+.file-viewer { position: fixed; z-index: 60; inset: 0; display: grid; grid-template-rows: 64px minmax(0,1fr); background: #111925; color: #fff; }
+.file-viewer-header { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 0 18px; border-bottom: 1px solid #ffffff20; background: #182332; }
+.viewer-title { min-width: 0; flex: 1; display: grid; gap: 3px; }
+.viewer-title strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.viewer-title small { color: #aebbc9; font-size: 10px; }
+.viewer-actions { display: flex; align-items: center; gap: 6px; }
+.viewer-icon { min-width: 38px; min-height: 38px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 6px; border: 1px solid #ffffff28; border-radius: 8px; color: #f5f8fc; background: #ffffff0a; font-size: 11px; text-decoration: none; cursor: pointer; }
+.viewer-icon:hover { background: #ffffff1c; }
+.viewer-icon:disabled { opacity: .5; }
+.file-viewer-canvas { position: relative; display: grid; min-height: 0; place-items: center; overflow: auto; background: #202a37; }
+.viewer-frame { width: 100%; height: 100%; border: 0; background: #fff; }
+.viewer-frame.text-view { width: min(100%,1000px); margin: 22px; height: calc(100% - 44px); }
+.viewer-image-wrap { position: relative; display: grid; width: 100%; height: 100%; place-items: center; overflow: auto; }
+.viewer-image { max-width: min(100%, calc(100vw - 30px)); max-height: calc(100vh - 90px); object-fit: contain; transition: transform .15s ease; }
+.image-zoom { position: fixed; z-index: 2; right: 20px; bottom: 20px; display: flex; gap: 5px; }
+.viewer-media { max-width: 100%; max-height: 100%; }
+.viewer-audio { width: min(560px, calc(100% - 30px)); }
+.viewer-state { display: grid; justify-items: center; gap: 10px; max-width: 440px; padding: 28px; text-align: center; }
+.viewer-state > svg { width: 36px; height: 36px; color: #a8cafa; }
+.viewer-state p, .viewer-state small { margin: 0; color: #c1cbd6; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.viewer-state .primary { margin-top: 8px; }
+.viewer-loading { position: absolute; z-index: 3; top: 16px; left: 50%; display: flex; align-items: center; gap: 9px; padding: 9px 13px; border-radius: 20px; background: #111925d9; color: white; font-size: 11px; transform: translateX(-50%); }
+.viewer-spinner { width: 20px; height: 20px; border: 2px solid #ffffff50; border-top-color: #fff; border-radius: 50%; animation: viewer-spin .8s linear infinite; }
+@keyframes viewer-spin { to { transform: rotate(360deg); } }
+@media (max-width: 720px) {
+  .file-viewer { grid-template-rows: calc(58px + env(safe-area-inset-top)) minmax(0,1fr); padding-top: env(safe-area-inset-top); }
+  .file-viewer-header { gap: 6px; padding: 0 8px; }
+  .viewer-title strong { max-width: 35vw; font-size: 11px; }
+  .viewer-title small { font-size: 9px; }
+  .viewer-actions { gap: 3px; }
+  .viewer-icon { min-width: 36px; min-height: 40px; }
+  .image-zoom { right: 12px; bottom: calc(14px + env(safe-area-inset-bottom)); }
+  .viewer-image { max-height: calc(100vh - 90px - env(safe-area-inset-top)); }
+}
 @media (max-width: 640px) {
   .profile-content-row, .search-community-result { align-items: flex-start; flex-direction: column; }
   .profile-content-row .button-row { justify-content: flex-start; }
