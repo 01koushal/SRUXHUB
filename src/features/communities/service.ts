@@ -1,4 +1,5 @@
 import { supabase } from '../../lib/supabase';
+import { withUserVotes } from '../posts/service';
 
 export type Community = {
   id: string;
@@ -45,11 +46,11 @@ export async function getMembership(id: string) {
 export async function getCommunityPosts(id: string) {
   if (!supabase) throw new Error('Supabase is not configured.');
   const { data, error } = await supabase.from('posts')
-    .select('id,title,content,post_type,created_at,vote_score,comment_count,profiles!posts_author_id_fkey(username,display_name,avatar_file_id),communities!posts_community_id_fkey(name,slug)')
+    .select('id,community_id,author_id,title,content,post_type,created_at,vote_score,comment_count,profiles!posts_author_id_fkey(username,display_name,avatar_file_id),communities!posts_community_id_fkey(name,slug)')
     .eq('community_id', id).eq('status', 'published')
     .order('created_at', { ascending: false }).range(0, 19);
   if (error) throw error;
-  return data ?? [];
+  return withUserVotes((data ?? []) as unknown as import('../posts/service').Post[]);
 }
 
 export async function listJoinedCommunities() {
@@ -61,4 +62,26 @@ export async function listJoinedCommunities() {
     .eq('user_id', user.id).limit(20);
   if (error) throw error;
   return (data ?? []).map(row => row.communities as unknown as Community).filter(Boolean);
+}
+
+export async function searchCommunities(term: string) {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const safe = term.trim().slice(0, 100).replace(/[,%_().]/g, ' ');
+  if (!safe) return [];
+  const pattern = `%${safe}%`;
+  const { data, error } = await supabase.from('communities').select(communityFields)
+    .or(`name.ilike.${pattern},description.ilike.${pattern}`)
+    .order('name').limit(30);
+  if (error) throw error;
+  return (data ?? []) as Community[];
+}
+
+export async function getJoinedCommunityIds(ids: string[]) {
+  if (!supabase || !ids.length) return new Set<string>();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return new Set<string>();
+  const { data, error } = await supabase.from('community_members').select('community_id')
+    .eq('user_id', user.id).in('community_id', ids);
+  if (error) throw error;
+  return new Set((data ?? []).map(row => row.community_id));
 }

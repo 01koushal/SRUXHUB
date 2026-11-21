@@ -10,7 +10,7 @@ import type { StoredFile } from '../../storage/provider';
 
 type Tab = 'posts' | 'files' | 'about';
 
-export default function CommunityPage({ renderPost }: { renderPost: (post: Post) => ReactNode }) {
+export default function CommunityPage({ renderPost }: { renderPost: (post: Post, onDeleted?: () => void) => ReactNode }) {
   const navigate = useNavigate();
   const { canParticipate } = useAuth();
   const slug = decodeURIComponent(location.pathname.split('/').pop() || '');
@@ -86,7 +86,7 @@ export default function CommunityPage({ renderPost }: { renderPost: (post: Post)
 
     {error && <div className="form-message" role="alert">{error}</div>}
     {tab === 'posts' && <div className="post-list">
-      {posts.map(post => renderPost(post))}
+      {posts.map(post => renderPost(post, () => setPosts(current => current.filter(item => item.id !== post.id))))}
       {posts.length === 0 && <div className="empty"><MessageCircle/><h2>No posts here yet</h2><p>Join the community and start the first conversation.</p></div>}
     </div>}
     {tab === 'files' && <section className="community-files">

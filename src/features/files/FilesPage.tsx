@@ -6,8 +6,37 @@ import type { Community } from '../communities/service';
 import { FILE_PAGE_SIZE, findExactFilename, listFiles } from './service';
 import { FileCard, formatSize } from './FileCard';
 import { MAX_UPLOAD_BYTES, storageProvider, type StoredFile } from '../../storage/provider';
+import { useParams } from 'react-router-dom';
 
 type PendingDuplicate = { file: File; existing: StoredFile; contentDuplicate: boolean; remaining: File[] };
+
+export function FileOpenPage() {
+  const { id = '' } = useParams();
+  const { session, canParticipate, loading, profileLoading } = useAuth();
+  const navigate = useNavigate();
+  const [error, setError] = useState('');
+  useEffect(() => {
+    if (loading || profileLoading) return;
+    const target = `${window.location.pathname}${window.location.search}`;
+    if (!canParticipate || !session) {
+      sessionStorage.setItem('sruxhub-return-to', target);
+      navigate(`/auth?next=${encodeURIComponent(target)}`, { replace: true });
+      return;
+    }
+    let active = true;
+    void fetch(`/api/files/${encodeURIComponent(id)}`, { method: 'POST', headers: { Authorization: `Bearer ${session.access_token}` } })
+      .then(async response => {
+        if (!response.ok) throw new Error(await fileApiError(response));
+        const download = new URLSearchParams(window.location.search).get('download') === '1';
+        const inline = new URLSearchParams(window.location.search).get('inline') !== '0';
+        window.location.replace(`/api/files/${encodeURIComponent(id)}?${download ? 'download=1' : inline ? 'inline=1' : 'download=1'}`);
+      }).catch(cause => { if (active) setError(cause instanceof Error ? cause.message : 'This file is unavailable.'); });
+    return () => { active = false; };
+  }, [id, session, canParticipate, loading, profileLoading, navigate]);
+  return <div className="empty" role={error ? 'alert' : 'status'}><FileText/><h2>{error ? 'File access unavailable' : 'Preparing secure file access'}</h2><p>{error || 'Checking your SRUXHUB account and community membership…'}</p>{error && <Link to="/files">Return to files</Link>}</div>;
+}
+
+async function fileApiError(response: Response) { try { const body = await response.json() as { error?: string }; return body.error || `File unavailable (HTTP ${response.status}).`; } catch { return `File unavailable (HTTP ${response.status}).`; } }
 
 export default function FilesPage({ communities }: { communities: Community[] }) {
   const { session, user, profile, canParticipate } = useAuth();
@@ -144,6 +173,7 @@ export default function FilesPage({ communities }: { communities: Community[] })
 
   async function removeFile(file: StoredFile) {
     if (!session) return navigate('/auth');
+    if (!window.confirm(`Delete “${file.name}” from this community? This cannot be undone.`)) return;
     try {
       await storageProvider.delete(file.id, session.access_token);
       setFiles(current => current.filter(item => item.id !== file.id));

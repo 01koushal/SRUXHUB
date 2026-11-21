@@ -12,10 +12,12 @@ function developmentError(action, error) {
 }
 
 export default async function handler(req, res) {
-  if (!['GET', 'DELETE'].includes(req.method)) return reply(res, 405, { error: 'Method not allowed' });
+  if (!['GET', 'POST', 'DELETE'].includes(req.method)) return reply(res, 405, { error: 'Method not allowed' });
 
   try {
-    const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+    const cookieToken = String(req.headers.cookie || '').split(';').map(value => value.trim())
+      .find(value => value.startsWith('sruxhub_file_session='))?.slice('sruxhub_file_session='.length);
+    const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || cookieToken || '';
     if (!token) return reply(res, 401, { error: 'Sign in required' });
 
     const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
@@ -61,6 +63,14 @@ export default async function handler(req, res) {
     }
     if (!allowed) return reply(res, 403, { error: 'You cannot access this file' });
 
+    if (req.method === 'POST') {
+      if (!req.headers.authorization) return reply(res, 401, { error: 'Sign in again to open this file' });
+      const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+      res.setHeader('Set-Cookie', `sruxhub_file_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/api/files; Max-Age=1800${secure}`);
+      res.statusCode = 204;
+      return res.end();
+    }
+
     if (req.method === 'DELETE') {
       if (file.community_id && !membership) return reply(res, 403, { error: 'Join this community before deleting its files' });
       if (file.owner_id !== user.id && !['moderator', 'admin'].includes(membership?.role)) {
@@ -88,11 +98,16 @@ export default async function handler(req, res) {
 
     const fileUrl = `${endpoint.replace(/\/$/, '')}/storage/buckets/${encodeURIComponent(file.storage_bucket_id)}/files/${encodeURIComponent(file.storage_file_id)}`;
     const storageUrl = req.method === 'GET' ? `${fileUrl}/download` : fileUrl;
+    const streamAbort = new AbortController();
+    res.once('close', () => { if (!res.writableEnded) streamAbort.abort(); });
+    const upstreamHeaders = { 'X-Appwrite-Project': project, 'X-Appwrite-Key': key };
+    if (req.method === 'GET' && req.headers.range) upstreamHeaders.Range = req.headers.range;
     const result = await fetch(storageUrl, {
       method: req.method,
-      headers: { 'X-Appwrite-Project': project, 'X-Appwrite-Key': key },
+      headers: upstreamHeaders,
+      signal: streamAbort.signal,
     });
-    if (!result.ok && !(req.method === 'DELETE' && result.status === 404)) {
+    if (!result.ok && result.status !== 416 && !(req.method === 'DELETE' && result.status === 404)) {
       let providerMessage = '';
       try {
         const providerError = await result.json();
@@ -109,12 +124,29 @@ export default async function handler(req, res) {
       return res.end();
     }
 
+    if (result.status === 416) {
+      if (result.headers.get('content-range')) res.setHeader('Content-Range', result.headers.get('content-range'));
+      res.statusCode = 416;
+      return res.end();
+    }
     if (!result.body) return reply(res, 502, { error: 'Storage provider returned an empty download' });
-    res.statusCode = 200;
-    res.setHeader('Content-Type', file.mime_type);
-    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(file.original_filename)}`);
+    res.statusCode = result.status === 206 ? 206 : 200;
+    const inlineTypes = new Set(['application/pdf', 'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'text/plain', 'text/csv', 'text/markdown']);
+    const safeMime = String(file.mime_type || '').split(';')[0].trim().toLowerCase();
+    const inline = req.query.inline === '1' && inlineTypes.has(safeMime);
+    res.setHeader('Content-Type', inline ? safeMime : 'application/octet-stream');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(file.original_filename)}`);
+    res.setHeader('Accept-Ranges', result.headers.get('accept-ranges') || (result.status === 206 ? 'bytes' : 'none'));
+    for (const header of ['content-length', 'content-range']) {
+      const value = result.headers.get(header);
+      if (value) res.setHeader(header === 'content-length' ? 'Content-Length' : 'Content-Range', value);
+    }
+    if (result.status === 200 && !result.headers.get('content-length')) res.setHeader('Content-Length', String(file.file_size));
     res.setHeader('Cache-Control', 'private, no-store');
-    Readable.fromWeb(result.body).on('error', error => {
+    const upstream = Readable.fromWeb(result.body);
+    res.once('close', () => { if (!res.writableEnded) upstream.destroy(); });
+    upstream.on('error', error => {
       console.error('[api/files/download] stream failed:', error instanceof Error ? error.message : 'Unknown stream error');
       if (!res.headersSent) reply(res, 502, { error: 'Storage provider download failed' });
       else res.destroy(error instanceof Error ? error : undefined);
