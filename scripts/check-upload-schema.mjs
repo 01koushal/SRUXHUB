@@ -19,6 +19,22 @@ if (missing.length) {
   });
   let rpcBody = {};
   try { rpcBody = await rpcResponse.json(); } catch { /* Report status without data. */ }
+  const directSessionResponse = await fetch(`${base}/rest/v1/direct_upload_sessions?select=id&limit=0`, { headers });
+  let directSessionBody = {};
+  try { directSessionBody = await directSessionResponse.json(); } catch { /* Report status without data. */ }
+  const filesResponse = await fetch(`${base}/rest/v1/files?select=id&limit=0`, { headers });
+  const writeProbe = async table => {
+    const response = await fetch(`${base}/rest/v1/${table}`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+      body: '{}',
+    });
+    let result = {};
+    try { result = await response.json(); } catch { /* Empty successful response. */ }
+    return { status: response.status, code: result.code ?? null };
+  };
+  const directSessionWriteProbe = await writeProbe('direct_upload_sessions');
+  const fileWriteProbe = await writeProbe('files');
   console.log(JSON.stringify({
     configured: true,
     status: response.status,
@@ -28,6 +44,12 @@ if (missing.length) {
     fileListRpcStatus: rpcResponse.status,
     fileListRpcCode: rpcBody.code ?? null,
     fileListRpcMessage: rpcBody.message ?? null,
+    directUploadSessionsAvailable: directSessionResponse.ok,
+    directUploadSessionsStatus: directSessionResponse.status,
+    directUploadSessionsCode: directSessionBody.code ?? null,
+    fileMetadataTableAvailable: filesResponse.ok,
+    directSessionWritePermissionProbe: directSessionWriteProbe,
+    fileMetadataWritePermissionProbe: fileWriteProbe,
   }));
-  if (!response.ok) process.exitCode = 1;
+  if (!directSessionResponse.ok || !filesResponse.ok || directSessionWriteProbe.status === 401 || directSessionWriteProbe.status === 403 || fileWriteProbe.status === 401 || fileWriteProbe.status === 403) process.exitCode = 1;
 }

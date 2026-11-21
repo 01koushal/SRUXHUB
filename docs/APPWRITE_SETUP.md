@@ -1,12 +1,20 @@
-# Appwrite Storage setup
+# Appwrite setup
 
-1. Create an Appwrite project named **SRUXHUB** in a region close to students.
-2. Create a private bucket named `sruxhub-uploads` and record its bucket ID. Do not enable public read or write access.
-3. Set the bucket maximum file size to **300 MiB** (`314572800` bytes). Enable **File security**. Under Permissions grant **Create** to **Users** only; do not grant browser Read, Update, Delete, Any, or Guests permissions. Allow JPEG, PNG, WebP, GIF, PDF, PPT, PPTX, DOCX, and ZIP extensions. Block executable and HTML content.
-4. Create a server API key with only the file storage read, write and delete permissions needed by the file handlers. Keep endpoint, project ID, API key and bucket ID in server-only environment variables. Never use a `VITE_` prefix.
-5. Appwrite's REST API accepts resumable chunks up to 5 MB using `Content-Range` and `X-Appwrite-ID`. SRUXHUB sends 3 MiB chunks through `/api/files/upload` so each Vercel request stays below its request-body limit.
-6. Apply migrations `006_community_file_sharing.sql`, `007_file_upload_sessions.sql` and `008_appwrite_chunk_staging.sql` after migrations 001–005. This adds/repairs the private upload-session table, exact-content duplicate enforcement, Appwrite 5 MiB chunk staging and file-vote data without deleting files or metadata.
+1. Create or select the SRUXHUB Appwrite project and choose a region near the users.
+2. Create a private Storage bucket and record its bucket ID. Do not grant read, update, delete, or any permissions to `Any` or `Guests`.
+3. Enable **File Security**. Grant bucket **Create** permission to **Users**. Set **Maximum file size** to at least `314572800` bytes (300 MiB). Configure allowed extensions to include `jpg`, `jpeg`, `png`, `webp`, `gif`, `pdf`, `ppt`, `pptx`, `doc`, `docx`, `xls`, `xlsx`, `zip`, `txt`, `md`, and `csv`. Block executable and HTML formats.
+4. Create a server API key with the Storage file read/write/delete and Users read/write scopes. Store it only as `APPWRITE_API_KEY` in the server environment. The API key provisions the deterministic Appwrite identity and custom token; it is never sent to browser code.
+5. Add each deployed SRUXHUB origin as an Appwrite Web platform so the official Web SDK requests pass Appwrite origin checks.
+6. Configure the seven variables in `.env.example`. Only `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` are browser-safe. Use Vercel environment settings for production; do not commit `.env` files.
 
-The server verifies the Supabase bearer token, Google provider, verified `@sru.edu.in` address, completed profile and community membership for each upload chunk. It computes the SHA-256 hash from the completed Appwrite object before publishing metadata. Downloads, previews and deletes continue through `/api/files/{id}`. Incomplete sessions can be cancelled and stale sessions are cleaned during a later upload.
+Appwrite identity IDs are derived from the authenticated Supabase user UUID. Existing identities are reused rather than creating a temporary user per upload. Upload file permission is temporarily scoped to that Appwrite user and removed at finalization. Downloads and deletes continue through authenticated SRUXHUB API routes.
 
-The frontend supports files up to 25 MiB per file, including ZIP. Supabase stores metadata and Appwrite stores the private binary. Live Appwrite/Vercel behavior still needs verification against the configured project before release; local tests use mocked service responses.
+## Verify in Appwrite Console
+
+- Bucket maximum file size is at least 300 MiB.
+- File Security is enabled and Create for Users is present.
+- No public, guest, or unrestricted file permissions are present.
+- The Appwrite Web platform lists the local and deployed SRUXHUB origins.
+- The API key scopes include Users read/write and Storage file read/write/delete.
+
+Do not report 300 MiB support as verified until a real 300 MiB browser upload and download have both completed and their byte counts and SHA-256 hashes have matched.

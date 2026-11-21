@@ -77,7 +77,9 @@ export function FileCard({ file, onDelete }: { file: StoredFile; onDelete?: (fil
         </button>
         {previewable && <button className="secondary icon-action" type="button" onClick={() => download(true)} disabled={busy} aria-label={`Preview ${file.name}`}><Eye size={17}/><span>Preview</span></button>}
         <button className="secondary icon-action" type="button" onClick={() => download()} disabled={busy} aria-label={`Download ${file.name}`}><ArrowDownToLine size={17}/><span>Download</span></button>
-        {isOwner && onDelete && <button className="quiet-danger" type="button" onClick={() => onDelete(file)} aria-label={`Delete ${file.name}`}><Trash2 size={17}/></button>}
+        {isOwner && onDelete && <button className="quiet-danger" type="button" onClick={() => {
+          if (window.confirm(`Delete “${file.name}” from this community? This cannot be undone.`)) onDelete(file);
+        }} aria-label={`Delete ${file.name}`}><Trash2 size={17}/></button>}
       </div>
     </article>
     {previewUrl && <div className="preview-backdrop" role="presentation" onClick={() => { URL.revokeObjectURL(previewUrl); setPreviewUrl(''); }}>

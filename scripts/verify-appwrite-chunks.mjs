@@ -8,7 +8,7 @@ const endpoint = process.env.APPWRITE_ENDPOINT.replace(/\/$/, '');
 const bucket = process.env.APPWRITE_BUCKET_ID;
 const requestedChunkSize = process.argv.find(value => value.startsWith('--chunk-size='));
 const chunkSize = requestedChunkSize ? Number(requestedChunkSize.slice('--chunk-size='.length)) : 5 * 1024 * 1024;
-const sizes = [2, 5, 10, 25].map(size => size * 1024 * 1024);
+const sizes = [5, 25, 100, 200, 300].map(size => size * 1024 * 1024);
 const sendInitialId = process.argv.includes('--initial-id');
 if (!Number.isInteger(chunkSize) || chunkSize < 1 || chunkSize > 5 * 1024 * 1024) {
   throw new Error('Chunk size must be between 1 byte and 5 MiB.');
@@ -39,9 +39,7 @@ async function remove(fileId) {
 
 async function verify(size) {
   const fileId = randomUUID();
-  const bytes = Buffer.alloc(size, 0x61);
-  Buffer.from('%PDF-1.7\n').copy(bytes);
-  const expectedHash = createHash('sha256').update(bytes).digest('hex');
+  const expectedHash = createHash('sha256');
   let providerId = fileId;
 
   try {
@@ -49,9 +47,12 @@ async function verify(size) {
       const endExclusive = Math.min(start + chunkSize, size);
       const isInitial = start === 0;
       const range = size > chunkSize ? `bytes ${start}-${endExclusive - 1}/${size}` : undefined;
+      const bytes = Buffer.alloc(endExclusive - start, 0x61);
+      if (isInitial) Buffer.from('%PDF-1.7\n').copy(bytes);
+      expectedHash.update(bytes);
       const form = new FormData();
       form.append('fileId', providerId);
-      form.append('file', new Blob([bytes.subarray(start, endExclusive)], { type: 'application/pdf' }), `upload-check-${size}.pdf`);
+      form.append('file', new Blob([bytes], { type: 'application/pdf' }), `upload-check-${size}.pdf`);
       const response = await fetch(`${endpoint}/storage/buckets/${encodeURIComponent(bucket)}/files`, {
         method: 'POST',
         headers: headers(providerId, range, isInitial),
@@ -82,12 +83,19 @@ async function verify(size) {
     const response = await fetch(`${endpoint}/storage/buckets/${encodeURIComponent(bucket)}/files/${encodeURIComponent(providerId)}/download`, {
       headers: headers(providerId),
     });
-    const downloaded = Buffer.from(await response.arrayBuffer());
-    const actualHash = createHash('sha256').update(downloaded).digest('hex');
-    if (!response.ok || downloaded.length !== size || actualHash !== expectedHash) {
+    if (!response.ok || !response.body) throw new Error(`Download failed for ${size} bytes (HTTP ${response.status})`);
+    const actualHash = createHash('sha256');
+    let downloadedSize = 0;
+    for await (const chunk of response.body) {
+      downloadedSize += chunk.length;
+      actualHash.update(chunk);
+    }
+    const downloadedHash = actualHash.digest('hex');
+    const expectedSha256 = expectedHash.digest('hex');
+    if (downloadedSize !== size || downloadedHash !== expectedSha256) {
       throw new Error(`Stored file verification failed for ${size} bytes`);
     }
-    console.log(JSON.stringify({ size, verified: true, bytes: downloaded.length, sha256Matches: true }));
+    console.log(JSON.stringify({ size, verified: true, bytes: downloadedSize, sha256Matches: true }));
   } finally {
     await remove(providerId);
   }

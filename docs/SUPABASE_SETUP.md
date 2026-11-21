@@ -33,10 +33,11 @@ In Supabase **SQL Editor**, create a query for each file and run these in order:
 7. `supabase/migrations/007_file_upload_sessions.sql`
 8. `supabase/migrations/008_appwrite_chunk_staging.sql`
 9. `supabase/migrations/009_direct_appwrite_uploads.sql`
+10. `supabase/migrations/010_server_managed_file_metadata.sql`
 
-Run all eight on a fresh project before enabling sign-in. Migration 003 removes the legacy email-derived profile trigger, adds onboarding state and applies OAuth/domain restrictions to participation policies. It marks existing complete profiles as onboarded, but old non-Google identities remain unable to participate. Migration 004 grants public community/feed/profile reads and profile onboarding access. Migration 005 applies least-privilege API grants. Migration 006 increases the file size constraint, adds chunk upload sessions, a race-safe community checksum index, file votes and the immutable Google-name trigger; it preserves file rows and Appwrite objects. Migration 007 safely repairs the upload-session table and refreshes PostgREST's schema cache. Migration 008 adds private staging fields so 3 MiB browser requests can be joined into Appwrite's required 5 MiB nonfinal chunks.
+Run migrations 001–010 in order on a fresh project before enabling sign-in. On an existing project, apply only migrations that have not already run. Migrations 006–009 add file sharing, upload state, the 300 MiB file-size constraint and direct Appwrite authorization records. Migration 010 revokes browser writes to file metadata and makes upload-session access explicitly server-only; it preserves all existing rows and Appwrite objects. The old chunk-staging migrations remain in history but are no longer used by the direct upload path.
 
-For an existing database that already ran migrations 001–005, apply migrations 006, 007 and 008 in order. If 006 and 007 were already applied, apply 008. Do not rerun earlier migrations and do not run `reset_and_rebuild.sql` for this upgrade; that script deletes application data.
+For an existing database, apply only migrations that have not already run. Do not rerun earlier migrations and do not run `reset_and_rebuild.sql` for this upgrade; that script deletes application data.
 
 ### Optional development-only full reset
 

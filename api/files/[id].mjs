@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { Readable } from 'node:stream';
 
 function reply(res, status, body) {
   res.statusCode = status;
@@ -39,13 +40,18 @@ export default async function handler(req, res) {
     if (fileError) return reply(res, 500, { error: developmentError('Could not load file metadata', fileError) });
     if (!file) return reply(res, 404, { error: 'File unavailable' });
 
-    let allowed = file.owner_id === user.id;
-    if (!allowed && file.visibility === 'community' && file.community_id) {
+    let membership = null;
+    if (file.community_id) {
       const { data: member, error } = await db.from('community_members')
-        .select('community_id').eq('community_id', file.community_id).eq('user_id', user.id).maybeSingle();
+        .select('role').eq('community_id', file.community_id).eq('user_id', user.id).maybeSingle();
       if (error) return reply(res, 500, { error: developmentError('Could not verify community membership', error) });
-      allowed = Boolean(member);
+      membership = member;
     }
+    let allowed = file.community_id
+      ? file.visibility === 'community'
+        ? Boolean(membership)
+        : file.owner_id === user.id
+      : file.owner_id === user.id;
     if (!allowed && file.visibility === 'community') {
       const { data: links, error } = await db.from('post_attachments')
         .select('posts!post_attachments_post_id_fkey!inner(status)')
@@ -55,10 +61,13 @@ export default async function handler(req, res) {
     }
     if (!allowed) return reply(res, 403, { error: 'You cannot access this file' });
 
-    if (req.method === 'DELETE' && file.owner_id !== user.id) {
-      const { data: admin, error } = await isAdmin(db, user.id);
-      if (error) return reply(res, 500, { error: developmentError('Could not verify admin access', error) });
-      if (!admin) return reply(res, 403, { error: 'Only the owner or an admin can delete this file' });
+    if (req.method === 'DELETE') {
+      if (file.community_id && !membership) return reply(res, 403, { error: 'Join this community before deleting its files' });
+      if (file.owner_id !== user.id && !['moderator', 'admin'].includes(membership?.role)) {
+        const { data: admin, error } = await isAdmin(db, user.id);
+        if (error) return reply(res, 500, { error: developmentError('Could not verify admin access', error) });
+        if (!admin) return reply(res, 403, { error: 'Only the owner or a community moderator/admin can delete this file' });
+      }
     }
 
     const safe = {
@@ -83,7 +92,7 @@ export default async function handler(req, res) {
       method: req.method,
       headers: { 'X-Appwrite-Project': project, 'X-Appwrite-Key': key },
     });
-    if (!result.ok) {
+    if (!result.ok && !(req.method === 'DELETE' && result.status === 404)) {
       let providerMessage = '';
       try {
         const providerError = await result.json();
@@ -100,11 +109,16 @@ export default async function handler(req, res) {
       return res.end();
     }
 
+    if (!result.body) return reply(res, 502, { error: 'Storage provider returned an empty download' });
     res.statusCode = 200;
     res.setHeader('Content-Type', file.mime_type);
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(file.original_filename)}`);
     res.setHeader('Cache-Control', 'private, no-store');
-    res.end(Buffer.from(await result.arrayBuffer()));
+    Readable.fromWeb(result.body).on('error', error => {
+      console.error('[api/files/download] stream failed:', error instanceof Error ? error.message : 'Unknown stream error');
+      if (!res.headersSent) reply(res, 502, { error: 'Storage provider download failed' });
+      else res.destroy(error instanceof Error ? error : undefined);
+    }).pipe(res);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'File request failed';
     console.error(`[api/files/${req.method === 'DELETE' ? 'delete' : 'download'}] request failed:`, message);

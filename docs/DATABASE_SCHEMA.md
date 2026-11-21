@@ -1,6 +1,6 @@
 # Database schema
 
-Migrations 001-005 establish profiles, communities, memberships, posts, files, attachments, comments, post votes, saved posts, notifications and reports, then apply RLS and least-privilege API grants. Migration 006 adds upload-session state, a community-scoped SHA-256 uniqueness rule, file votes, file sorting/listing RPCs and database enforcement of immutable Google display names. Migration 007 idempotently restores upload-session storage privileges, replaces the file-list RPC with bounded pages, and asks PostgREST to reload its schema cache. Migration 008 privately stages 3 MiB browser uploads until an Appwrite-valid 5 MiB provider chunk is ready. These migrations preserve existing file rows and Appwrite objects. The development reset script is destructive and is not part of a normal upgrade.
+Migrations 001-005 establish profiles, communities, memberships, posts, files, attachments, comments, post votes, saved posts, notifications and reports, then apply RLS and least-privilege API grants. Migration 006 adds upload-session state, a community-scoped SHA-256 uniqueness rule, file votes, file sorting/listing RPCs and database enforcement of immutable Google display names. Migration 007 idempotently restores upload-session storage privileges and replaces the file-list RPC with bounded pages. Migration 008 preserves staging for the retired server-proxied uploader. Migration 009 adds the 300 MiB constraint and server-managed direct-upload authorization records. Migration 010 revokes browser writes to file metadata and documents server-only upload-session access. These migrations preserve existing file rows and Appwrite objects. The development reset script is destructive and is not part of a normal upgrade.
 
 UUIDs identify rows. Auth user deletion cascades private memberships, votes, saves and notifications but preserves authored content where foreign keys restrict deletion. Appwrite owns file binaries; Supabase stores metadata. Community roles are enum-constrained and self-join permits only `member`; admin assignment requires a trusted project-owner SQL session.
 
@@ -15,9 +15,9 @@ UUIDs identify rows. Auth user deletion cascades private memberships, votes, sav
 | `community_members` | None | Select own membership, join, leave | Admin role changes under RLS |
 | `saved_posts` | None | Select, save, unsave | Owner-scoped RLS |
 | `notifications` | None | Select own rows; update `read_at` | Owner-scoped RLS |
-| `files` | None | Select rows allowed by file RLS | Upload, download, preview and delete use authenticated Vercel handlers |
+| `files` | None | Select rows allowed by file RLS | Upload, metadata writes, download, preview and delete use authenticated Vercel handlers |
 | `file_votes` | None | Select community vote rows | `toggle_file_vote` RPC verifies identity and membership |
-| `file_upload_sessions` | None | None | Server role only; upload sessions are owner-scoped |
+| `file_upload_sessions`, `direct_upload_sessions` | None | None | Server role only; upload sessions are owner-scoped |
 | `votes` | None | No direct table access | `cast_post_vote` RPC |
 | `post_attachments` | None | No direct table access | Server authorization reads |
 | `reports` | None | Submit reports; admins read/review | No report UI currently |

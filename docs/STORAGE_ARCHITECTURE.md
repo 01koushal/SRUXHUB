@@ -1,19 +1,25 @@
 # Storage architecture
 
-Supabase owns authorization, upload-session state, file metadata and vote rows. Appwrite keeps the private file binaries. The browser communicates only with `/api/files/upload` and `/api/files/{id}`; server credentials never enter the Vite bundle.
+Supabase Auth remains the user identity provider. Supabase Postgres stores file metadata, community ownership and short-lived upload authorization records. Appwrite Storage stores private binary objects. The browser sends file bytes directly to Appwrite with the official Appwrite Web SDK; Vercel functions receive only small JSON authorization/finalization requests.
 
-## Upload flow
+## Upload
 
-The browser sends sequential 3 MiB raw chunks to the existing upload handler. Every request is authenticated against Supabase and checked against the user's SRU Google profile and community membership. Appwrite reassembles the chunks using its REST `Content-Range` and `X-Appwrite-ID` protocol. Appwrite supports chunks up to 5 MB; keeping ours at 3 MiB also keeps multipart proxy requests below Vercel's 4.5 MB request limit. The first chunk creates a private upload session in Supabase. Sessions are restricted to the owner and community by the server, can be cancelled, and incomplete sessions older than 24 hours are cleaned during a later upload.
+1. The browser sends the selected file name, normalized MIME type, byte size and community ID with the current Supabase access token.
+2. `api/files/direct.mjs` validates the Supabase user, SRU Google account, completed profile, community membership, allowed extension/MIME type and 314572800-byte limit.
+3. The server maps the Supabase UUID deterministically to an Appwrite user ID, reuses or creates that Appwrite user, and issues a short-lived custom token. It records the exact file metadata and owner in `direct_upload_sessions`.
+4. The browser clears any previous Appwrite `current` session for this Appwrite project, creates a session with the custom token, and calls `Storage.createFile`. The Web SDK handles chunked requests and reports progress. The new file receives only a temporary read permission for its mapped Appwrite user.
+5. The server retrieves Appwrite metadata and checks file ID, sanitized name, size, MIME type and the temporary owner permission. It removes file permissions, then inserts the published Supabase metadata row using the authenticated Supabase user's ID. Appwrite API keys and Supabase service-role keys stay server-side.
 
-After Appwrite has the complete object, the server downloads it back, computes SHA-256 from the stored bytes, checks for an existing fingerprint in the same community, and only then inserts the published Supabase metadata row. A community/hash unique index rejects concurrent identical uploads. A duplicate's temporary Appwrite object is deleted; the API returns the existing file summary so the UI can link to it. Filename matching is a case-sensitive warning in the UI and never blocks different content.
+The Appwrite bucket must have File Security enabled, Create granted to Users, no public permissions, and a maximum size of at least 314572800 bytes. The application additionally rejects files above that same limit.
 
-The frontend validates supported extensions, MIME types and the 25 MB per-file size before upload. The server repeats type, extension, size, signature, account, onboarding and membership checks. ZIP is accepted only with a ZIP MIME type and ZIP signature. The accepted MIME types are images (JPEG/PNG/WebP/GIF), PDF, PPT/PPTX, DOCX, and ZIP.
+Small files up to 5 MiB are downloaded once by the server after upload to calculate SHA-256 and preserve exact-content deduplication. Larger files are not fetched back automatically; their metadata has a null `sha256`. This avoids doubling Appwrite egress for large production uploads. The stored metadata checks do not claim byte-integrity verification. A full integrity verification requires calculating a hash of the original file and downloaded bytes and comparing them explicitly.
 
-## File access and votes
+For an explicit operator-run integrity check, use `node --env-file=.env scripts/verify-appwrite-integrity.mjs <original-file-path> <appwrite-file-id> [original-mime-type]`. It streams the original and downloaded file through SHA-256 without buffering either full file and prints `Original SHA-256 === Downloaded SHA-256` together with byte-count and metadata checks. This check is optional and downloads the entire object, so it is not run automatically on production uploads.
 
-Downloads, previews and deletion use the existing authenticated `/api/files/{id}` handler. Binaries stay private in Appwrite. Supabase rows record Appwrite identifiers, community, owner, MIME, byte size, timestamps and the server-computed checksum. The community file list RPC returns database vote counts and the signed-in user's vote state, scoped to communities they joined. The vote RPC locks the target file and toggles the unique `(file_id, user_id)` row.
+## Access and cleanup
 
-Apply migrations `006_community_file_sharing.sql`, `007_file_upload_sessions.sql` and `008_appwrite_chunk_staging.sql` after migrations 001–005 before using the file list, votes, or chunked uploads. They preserve existing file rows and objects, expand the size check, add/repair session and vote tables, and stage browser chunks into Appwrite-valid provider chunks.
+Appwrite remains private. Download and delete requests use the Supabase file metadata ID, then the server checks the authenticated SRU user, the corresponding metadata row and the current community access before contacting Appwrite with its server key. Non-owner deletion requires moderator/admin authority. Community members never receive Appwrite admin credentials or unrestricted file URLs.
 
-The project does not currently scan for malware or inspect every accepted format's full binary structure. SHA-256 identifies byte-identical files only; it does not identify modified, visually similar, recompressed or re-ordered documents.
+Upload authorization rows are RLS enabled and inaccessible to browser roles. Only server routes use the service-role client. Expired or cancelled Appwrite objects are removed during later upload authorization requests; failed cleanup can leave an orphan until another cleanup attempt or manual review. Supabase file metadata is server managed so browser clients cannot forge a row that references an arbitrary Appwrite object.
+
+Apply migrations 001–010 in order to a new database. On an existing database, apply only unapplied migrations; migration 010 is forward-only and does not delete rows or Appwrite objects.

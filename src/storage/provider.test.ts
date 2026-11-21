@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AppwriteStorageProvider, FileUploadError, MAX_UPLOAD_BYTES, parseUploadResponse } from './provider';
+import { AppwriteStorageProvider, FileUploadError, getUploadMime, MAX_UPLOAD_BYTES, parseUploadResponse, validateUpload } from './provider';
 
 describe('upload response handling', () => {
   it('accepts the metadata shape returned by the upload API', () => {
@@ -41,5 +41,18 @@ describe('upload response handling', () => {
     }
     expect(result).toBeInstanceOf(FileUploadError);
     expect(result).toMatchObject({ existingFile: { id: 'same-file', name: 'paper.pdf' } });
+  });
+});
+
+describe('upload file validation', () => {
+  it('accepts ZIP MIME aliases and infers ZIP for generic browser MIME', () => {
+    expect(getUploadMime({ name: 'notes.zip', type: 'application/x-zip-compressed' } as File)).toBe('application/zip');
+    expect(getUploadMime({ name: 'notes.zip', type: 'application/octet-stream' } as File)).toBe('application/zip');
+    expect(() => validateUpload({ name: 'notes.zip', type: 'application/x-zip-compressed', size: 8 } as File)).not.toThrow();
+  });
+
+  it('accepts JPEG extension aliases and enforces the 300 MiB boundary', () => {
+    expect(() => validateUpload({ name: 'photo.jpeg', type: 'image/jpeg', size: MAX_UPLOAD_BYTES } as File)).not.toThrow();
+    expect(() => validateUpload({ name: 'photo.jpeg', type: 'image/jpeg', size: MAX_UPLOAD_BYTES + 1 } as File)).toThrow('Maximum file size is 300 MB.');
   });
 });

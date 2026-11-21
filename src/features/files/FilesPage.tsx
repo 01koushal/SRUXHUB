@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthProvider';
 import type { Community } from '../communities/service';
 import { FILE_PAGE_SIZE, findExactFilename, listFiles } from './service';
-import { FileCard } from './FileCard';
+import { FileCard, formatSize } from './FileCard';
 import { MAX_UPLOAD_BYTES, storageProvider, type StoredFile } from '../../storage/provider';
 
 type PendingDuplicate = { file: File; existing: StoredFile; contentDuplicate: boolean; remaining: File[] };
@@ -23,6 +23,8 @@ export default function FilesPage({ communities }: { communities: Community[] })
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [currentName, setCurrentName] = useState('');
+  const [currentSize, setCurrentSize] = useState(0);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [error, setError] = useState('');
   const [pendingDuplicate, setPendingDuplicate] = useState<PendingDuplicate | null>(null);
   const [failedFile, setFailedFile] = useState<File | null>(null);
@@ -81,6 +83,7 @@ export default function FilesPage({ communities }: { communities: Community[] })
         break;
       }
       setCurrentName(file.name);
+      setCurrentSize(file.size);
       setProgress(0);
       try {
         if (!(action === 'filename' && index === 0)) {
@@ -129,6 +132,7 @@ export default function FilesPage({ communities }: { communities: Community[] })
       }
     }
     if (inputRef.current && !pausedForDuplicate) inputRef.current.value = '';
+    if (!pausedForDuplicate) setSelectedFiles([]);
     setBusy(false);
     setCurrentName('');
     await load(0);
@@ -162,12 +166,13 @@ export default function FilesPage({ communities }: { communities: Community[] })
           <option value="">Choose a community</option>
           {communities.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
         </select></label>
-        <label className="file-picker">Choose files<input ref={inputRef} type="file" name="files" required multiple
-          accept="image/jpeg,image/png,image/webp,image/gif,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/zip,application/x-zip-compressed,.zip"/>
+        <label className="file-picker">Choose files<input ref={inputRef} type="file" name="files" required multiple onChange={event => setSelectedFiles(Array.from(event.target.files || []))}
+          accept=".jpg,.jpeg,.png,.webp,.gif,.pdf,.ppt,.pptx,.doc,.docx,.xls,.xlsx,.zip,.txt,.md,.csv"/>
           <small>Images, PDF, PowerPoint, Word or ZIP · 300 MB max per file</small></label>
       </div>
+      {selectedFiles.length > 0 && !busy && <ul className="selected-upload-files" aria-label="Selected files">{selectedFiles.map((file, index) => <li key={`${file.name}-${file.size}-${index}`}><span>{file.name}</span><small>{formatSize(file.size)}</small></li>)}</ul>}
       {busy && <div className="upload-progress" aria-live="polite">
-        <div className="progress-caption"><span>Uploading {currentName} — {progress}%</span><button type="button" className="text-button" onClick={cancelUpload}>Cancel</button></div>
+        <div className="progress-caption"><span>Uploading {currentName} · {formatSize(currentSize)} · {progress}%</span><button type="button" className="text-button" onClick={cancelUpload}>Cancel</button></div>
         <progress max="100" value={progress}>{progress}%</progress>
       </div>}
       {pendingDuplicate && <div className={pendingDuplicate.contentDuplicate ? 'duplicate-warning content-duplicate' : 'duplicate-warning'} role="alert">
@@ -177,7 +182,7 @@ export default function FilesPage({ communities }: { communities: Community[] })
       </div>}
       {error && <p className="form-message" role="alert">{error}</p>}
       <div className="upload-panel-footer">
-        <span>Maximum file size: 300 MB</span>
+        <span>Maximum file size: 300 MiB</span>
         <div className="button-row">
           {failedFile && <button type="button" className="secondary" onClick={() => void uploadFiles(undefined, 'retry')}>Retry {failedFile.name}</button>}
           <button className="primary" disabled={busy || !community}>{busy ? 'Uploading…' : 'Upload files'}</button>
