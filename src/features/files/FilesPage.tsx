@@ -16,7 +16,7 @@ export function FileOpenPage() {
   const { session, canParticipate, loading, profileLoading } = useAuth();
   const navigate = useNavigate();
   const [error, setError] = useState('');
-  const [metadata, setMetadata] = useState<{name:string;mimeType:string;size:number}|null>(null);
+  const [metadata, setMetadata] = useState<(StoredFile & {status?:string;canDelete?:boolean})|null>(null);
   useEffect(() => {
     if (loading || profileLoading) return;
     const target = `${window.location.pathname}${window.location.search}`;
@@ -26,16 +26,13 @@ export function FileOpenPage() {
       return;
     }
     let active = true;
-    void fetch(`/api/files/${encodeURIComponent(id)}`, { method: 'POST', headers: { Authorization: `Bearer ${session.access_token}` } })
-      .then(async response => {
-        if (!response.ok) throw new Error(await fileApiError(response));
-        const meta = await fetch(`/api/files/${encodeURIComponent(id)}?metadata=1`, { headers: { Authorization: `Bearer ${session.access_token}` } });
-        if (!meta.ok) throw new Error(await fileApiError(meta));
-        if (active) setMetadata(await meta.json());
-      }).catch(cause => { if (active) setError(cause instanceof Error ? cause.message : 'This file is unavailable.'); });
+    setMetadata(null); setError('');
+    void fetch(`/api/files/${encodeURIComponent(id)}?metadata=1`, { headers: { Authorization: `Bearer ${session.access_token}` } })
+      .then(async response => { if (!response.ok) throw new Error(await fileApiError(response)); if (active) setMetadata(await response.json()); })
+      .catch(cause => { if (active) setError(cause instanceof Error ? cause.message : 'This file is unavailable.'); });
     return () => { active = false; };
   }, [id, session, canParticipate, loading, profileLoading, navigate]);
-  return <FileViewer id={id} metadata={metadata} error={error} />;
+  return <FileViewer id={id} metadata={metadata} error={error} onDeleted={() => setMetadata(null)} />;
 }
 
 async function fileApiError(response: Response) { try { const body = await response.json() as { error?: string }; return body.error || `File unavailable (HTTP ${response.status}).`; } catch { return `File unavailable (HTTP ${response.status}).`; } }

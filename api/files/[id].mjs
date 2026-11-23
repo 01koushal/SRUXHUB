@@ -86,8 +86,27 @@ export default async function handler(req, res) {
       mimeType: file.mime_type,
       size: file.file_size,
       provider: file.storage_provider,
+      uploadedAt: file.created_at,
+      status: file.status,
+      uploaderId: file.owner_id,
     };
-    if (req.method === 'GET' && req.query.metadata) return reply(res, 200, safe);
+    if (req.method === 'GET' && req.query.metadata) {
+      const [{ data: uploader }, { data: community }] = await Promise.all([
+        db.from('profiles').select('display_name,username').eq('user_id', file.owner_id).maybeSingle(),
+        file.community_id
+          ? db.from('communities').select('name').eq('id', file.community_id).maybeSingle()
+          : Promise.resolve({ data: null }),
+      ]);
+      const globalAdmin = membership?.role === 'admin' || (await isAdmin(db, user.id)).data;
+      return reply(res, 200, {
+        ...safe,
+        communityId: file.community_id,
+        communityName: community?.name || null,
+        uploaderName: uploader?.display_name || 'SRU student',
+        uploaderUsername: uploader?.username || null,
+        canDelete: file.owner_id === user.id || ['moderator', 'admin'].includes(membership?.role) || globalAdmin,
+      });
+    }
 
     const endpoint = process.env.APPWRITE_ENDPOINT;
     const project = process.env.APPWRITE_PROJECT_ID;
