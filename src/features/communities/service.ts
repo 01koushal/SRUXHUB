@@ -34,13 +34,27 @@ export async function leaveCommunity(id: string) {
 }
 
 export async function getMembership(id: string) {
+  return Boolean(await getMembershipRole(id));
+}
+
+export async function getMembershipRole(id: string) {
+  if (!supabase) return false;
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return false;
+  const { data, error } = await supabase.from('community_members').select('role')
+    .eq('community_id', id).eq('user_id', user.id).maybeSingle();
+  if (error) throw error;
+  return data?.role || null;
+}
+
+export async function getUserIsAdmin() {
   if (!supabase) return false;
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return false;
   const { data, error } = await supabase.from('community_members').select('community_id')
-    .eq('community_id', id).eq('user_id', user.id).maybeSingle();
+    .eq('user_id', user.id).eq('role', 'admin').limit(1);
   if (error) throw error;
-  return Boolean(data);
+  return Boolean(data?.length);
 }
 
 export async function getCommunityPosts(id: string) {

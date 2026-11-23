@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { CalendarDays, FileText, Info, MessageCircle, Users } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthProvider';
-import { getCommunityPosts, getMembership, joinCommunity, leaveCommunity, listCommunities, type Community } from './service';
+import { getCommunityPosts, getMembershipRole, getUserIsAdmin, joinCommunity, leaveCommunity, listCommunities, type Community } from './service';
 import { listFiles } from '../files/service';
 import { FileCard } from '../files/FileCard';
 import type { Post } from '../posts/service';
@@ -12,12 +12,14 @@ type Tab = 'posts' | 'files' | 'about';
 
 export default function CommunityPage({ renderPost }: { renderPost: (post: Post, onDeleted?: () => void) => ReactNode }) {
   const navigate = useNavigate();
-  const { canParticipate } = useAuth();
+  const { canParticipate, user } = useAuth();
   const slug = decodeURIComponent(location.pathname.split('/').pop() || '');
   const [community, setCommunity] = useState<Community | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
   const [files, setFiles] = useState<StoredFile[]>([]);
   const [joined, setJoined] = useState(false);
+  const [memberRole, setMemberRole] = useState<string | null>(null);
+  const [globalAdmin, setGlobalAdmin] = useState(false);
   const [tab, setTab] = useState<Tab>('posts');
   const [sort, setSort] = useState<'newest' | 'upvotes'>('newest');
   const [loading, setLoading] = useState(true);
@@ -29,14 +31,17 @@ export default function CommunityPage({ renderPost }: { renderPost: (post: Post,
     void listCommunities().then(async all => {
       const result = all.find(item => item.slug === slug);
       if (!result) throw new Error('Community not found.');
-      const [communityPosts, isMember] = await Promise.all([
+      const [communityPosts, isMember, isAdmin] = await Promise.all([
         getCommunityPosts(result.id),
-        getMembership(result.id),
+        getMembershipRole(result.id),
+        getUserIsAdmin(),
       ]);
       if (!active) return;
       setCommunity(result);
       setPosts(communityPosts as unknown as Post[]);
-      setJoined(isMember);
+      setMemberRole(typeof isMember === 'string' ? isMember : null);
+      setGlobalAdmin(isAdmin);
+      setJoined(Boolean(isMember));
       setError('');
     }).catch(cause => {
       if (active) setError(cause instanceof Error ? cause.message : 'Could not load this community.');
@@ -59,6 +64,7 @@ export default function CommunityPage({ renderPost }: { renderPost: (post: Post,
       if (joined) await leaveCommunity(community.id);
       else await joinCommunity(community.id);
       setJoined(value => !value);
+      setMemberRole(joined ? null : 'member');
       setCommunity(current => current ? { ...current, member_count: Math.max(0, (current.member_count || 0) + (joined ? -1 : 1)) } : current);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not update membership.');
@@ -91,7 +97,7 @@ export default function CommunityPage({ renderPost }: { renderPost: (post: Post,
     </div>}
     {tab === 'files' && <section className="community-files">
       <div className="community-files-head"><div><h2>Shared files</h2><p>Resources available to community members.</p></div><label className="sort-select"><span>Sort</span><select value={sort} onChange={event => setSort(event.target.value as 'newest' | 'upvotes')}><option value="newest">Newest</option><option value="upvotes">Most upvoted</option></select></label></div>
-      {!joined ? <div className="empty"><FileText/><h2>Join to access community files</h2><p>Membership keeps shared resources within this community.</p><button className="primary" onClick={() => void toggleMembership()}>Join community</button></div> : files.length ? <div className="file-list">{files.map(file => <FileCard key={file.id} file={file}/>)}</div> : <div className="empty"><FileText/><h2>No files shared yet</h2><p>Useful resources uploaded for this community will appear here.</p><Link className="secondary" to="/files">Share a file</Link></div>}
+      {!joined ? <div className="empty"><FileText/><h2>Join to access community files</h2><p>Membership keeps shared resources within this community.</p><button className="primary" onClick={() => void toggleMembership()}>Join community</button></div> : files.length ? <div className="file-list">{files.map(file => <FileCard key={file.id} file={file} canDelete={file.uploaderId === user?.id || globalAdmin || ['moderator','admin'].includes(memberRole || '')}/>)}</div> : <div className="empty"><FileText/><h2>No files shared yet</h2><p>Useful resources uploaded for this community will appear here.</p><Link className="secondary" to="/files">Share a file</Link></div>}
     </section>}
     {tab === 'about' && <section className="about-panel">
       <div className="about-description"><div className="eyebrow">ABOUT THIS COMMUNITY</div><h2>{community.name}</h2><p>{community.description || 'No community description has been added yet.'}</p></div>

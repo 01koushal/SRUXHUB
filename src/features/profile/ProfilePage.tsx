@@ -6,7 +6,7 @@ import { supabase } from '../../lib/supabase';
 import { validateUsername } from '../auth/validation';
 import type { Community } from '../communities/service';
 import { FileCard } from '../files/FileCard';
-import { storageProvider, type StoredFile } from '../../storage/provider';
+import type { StoredFile } from '../../storage/provider';
 import { deleteComment, type Comment, type Post } from '../posts/service';
 import { PostMenu } from '../posts/PostMenu';
 
@@ -15,7 +15,7 @@ type Tab = 'Overview' | 'My Posts' | 'My Comments' | 'My Files' | 'My Communitie
 type ProfileComment = Comment & { posts: { id: string; title: string; communities: { name: string; slug: string } | null } | null };
 
 export default function ProfilePage() {
-  const { user, profile: authProfile, canParticipate, session } = useAuth();
+  const { user, profile: authProfile, canParticipate } = useAuth();
   const [profile, setProfile] = useState<ProfileForm>({ username: '', display_name: '', bio: '' });
   const [communities, setCommunities] = useState<Community[]>([]);
   const [posts, setPosts] = useState<Post[]>([]);
@@ -99,13 +99,9 @@ export default function ProfilePage() {
   }
 
   async function deleteFile(file: StoredFile) {
-    if (!session || !window.confirm(`Delete “${file.name}” from its community? This cannot be undone.`)) return;
-    try {
-      await storageProvider.delete(file.id, session.access_token);
-      setFiles(current => current.filter(item => item.id !== file.id));
-      setStats(current => ({ ...current, files: Math.max(0, current.files - 1) }));
-      setMessage('File deleted.');
-    } catch (cause) { setMessage(cause instanceof Error ? cause.message : 'Could not delete file.'); }
+    setFiles(current => current.filter(item => item.id !== file.id));
+    setStats(current => ({ ...current, files: Math.max(0, current.files - 1) }));
+    setMessage('File deleted.');
   }
 
   async function removeMyComment(comment: ProfileComment) {
@@ -136,7 +132,7 @@ export default function ProfilePage() {
     </div>}
     {tab === 'My Posts' && <section className="profile-content-list">{posts.map(post => <article className="profile-content-row" key={post.id}><div><h3>{post.title}</h3><p>{post.content}</p><small>{post.communities?.name ?? 'Community'} · {formatDate(post.created_at)} · Score {post.vote_score} · {post.comment_count} comments{post.attachment_names?.length ? ` · Attachments: ${post.attachment_names.join(', ')}` : ''}</small></div><div className="button-row"><Link className="secondary" to={`/p/${post.id}`}>View Post</Link><a className="secondary" href={`/p/${post.id}`} target="_blank" rel="noreferrer">Open Original Post</a><PostMenu post={post} onDeleted={() => { setPosts(current => current.filter(item => item.id !== post.id)); setMyComments(current => current.filter(comment => comment.post_id !== post.id)); setStats(current => ({ ...current, posts: Math.max(0, current.posts - 1) })); setMessage('Post deleted.'); }}/></div></article>)}{!posts.length && <div className="empty"><MessageCircle/><h2>No posts yet</h2><p>Your posts will appear here.</p></div>}</section>}
     {tab === 'My Comments' && <section className="profile-content-list">{myComments.map(comment => <article className="profile-content-row" key={comment.id}><div><small>{comment.parent_comment_id ? 'Reply' : 'Comment'}{comment.posts?.communities?.name ? ` · ${comment.posts.communities.name}` : ''}</small><h3>{comment.posts?.title ?? 'Original post is no longer available'}</h3><p>{comment.content}</p><small>{formatDate(comment.created_at)}</small></div><div className="button-row">{comment.posts && <Link className="secondary" to={`/p/${comment.posts.id}#comment-${comment.id}`}>Open discussion</Link>}<button className="quiet-danger" disabled={deletingCommentId === comment.id} onClick={() => void removeMyComment(comment)} aria-label={`Delete your ${comment.parent_comment_id ? 'reply' : 'comment'}`}>{deletingCommentId === comment.id ? 'Deleting…' : <><Trash2 size={16}/> Delete</>}</button></div></article>)}{!myComments.length && <div className="empty"><MessageCircle/><h2>No comments yet</h2><p>Your comments and replies will appear here.</p></div>}</section>}
-    {tab === 'My Files' && <section className="profile-content-list">{files.map(file => <FileCard key={file.id} file={file} onDelete={() => void deleteFile(file)}/>)}{!files.length && <div className="empty"><FileText/><h2>No files yet</h2><p>Your uploaded files will appear here.</p></div>}</section>}
+    {tab === 'My Files' && <section className="profile-content-list">{files.map(file => <FileCard key={file.id} file={file} onDelete={deleteFile}/>)}{!files.length && <div className="empty"><FileText/><h2>No files yet</h2><p>Your uploaded files will appear here.</p></div>}</section>}
     {tab === 'My Communities' && <section className="community-grid">{communities.map(community => <Link key={community.id} to={`/c/${community.slug}`} className="community-card"><i className="community-badge">{community.icon ? <img src={community.icon} alt=""/> : community.name[0]}</i><h3>{community.name}</h3><p>{community.description}</p><small>{community.member_count ?? 0} members</small></Link>)}{!communities.length && <div className="empty"><Users/><h2>No communities joined</h2><Link to="/discover">Explore communities</Link></div>}</section>}
   </section>;
 }

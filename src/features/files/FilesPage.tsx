@@ -7,7 +7,7 @@ import { FILE_PAGE_SIZE, findExactFilename, listFiles } from './service';
 import { FileCard, formatSize } from './FileCard';
 import { MAX_UPLOAD_BYTES, storageProvider, type StoredFile } from '../../storage/provider';
 import { useParams } from 'react-router-dom';
-import { FileViewer } from './FileViewer';
+import { supabase } from '../../lib/supabase';
 
 type PendingDuplicate = { file: File; existing: StoredFile; contentDuplicate: boolean; remaining: File[] };
 
@@ -15,8 +15,7 @@ export function FileOpenPage() {
   const { id = '' } = useParams();
   const { session, canParticipate, loading, profileLoading } = useAuth();
   const navigate = useNavigate();
-  const [error, setError] = useState('');
-  const [metadata, setMetadata] = useState<(StoredFile & {status?:string;canDelete?:boolean})|null>(null);
+  const started = useRef('');
   useEffect(() => {
     if (loading || profileLoading) return;
     const target = `${window.location.pathname}${window.location.search}`;
@@ -25,14 +24,20 @@ export function FileOpenPage() {
       navigate(`/auth?next=${encodeURIComponent(target)}`, { replace: true });
       return;
     }
+    const requestKey = `${id}:${session.access_token}`;
+    if (started.current === requestKey) return;
+    started.current = requestKey;
     let active = true;
-    setMetadata(null); setError('');
-    void fetch(`/api/files/${encodeURIComponent(id)}?metadata=1`, { headers: { Authorization: `Bearer ${session.access_token}` } })
-      .then(async response => { if (!response.ok) throw new Error(await fileApiError(response)); if (active) setMetadata(await response.json()); })
-      .catch(cause => { if (active) setError(cause instanceof Error ? cause.message : 'This file is unavailable.'); });
+    void fetch(`/api/files/${encodeURIComponent(id)}`, { method: 'POST', headers: { Authorization: `Bearer ${session.access_token}` } })
+      .then(async response => {
+        if (!response.ok) throw new Error(await fileApiError(response));
+        if (active) window.location.replace(`/api/files/${encodeURIComponent(id)}?inline=1`);
+      }).catch(cause => {
+        if (active) { const message = cause instanceof Error ? cause.message : 'This file is unavailable.'; window.alert(message); navigate('/files', { replace: true }); }
+      });
     return () => { active = false; };
   }, [id, session, canParticipate, loading, profileLoading, navigate]);
-  return <FileViewer id={id} metadata={metadata} error={error} onDeleted={() => setMetadata(null)} />;
+  return <div className="loading" role="status">Opening file…</div>;
 }
 
 async function fileApiError(response: Response) { try { const body = await response.json() as { error?: string }; return body.error || `File unavailable (HTTP ${response.status}).`; } catch { return `File unavailable (HTTP ${response.status}).`; } }
@@ -43,6 +48,8 @@ export default function FilesPage({ communities }: { communities: Community[] })
   const inputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const [files, setFiles] = useState<StoredFile[]>([]);
+  const [communityRoles, setCommunityRoles] = useState<Record<string,string>>({});
+  const [globalAdmin, setGlobalAdmin] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [community, setCommunity] = useState('');
@@ -56,6 +63,19 @@ export default function FilesPage({ communities }: { communities: Community[] })
   const [error, setError] = useState('');
   const [pendingDuplicate, setPendingDuplicate] = useState<PendingDuplicate | null>(null);
   const [failedFile, setFailedFile] = useState<File | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    if (!supabase || !user) { setCommunityRoles({}); setGlobalAdmin(false); return () => { active = false; }; }
+    void (async () => {
+      const [roles,admin] = await Promise.all([
+        communities.length ? supabase.from('community_members').select('community_id,role').eq('user_id',user.id).in('community_id',communities.map(item=>item.id)) : Promise.resolve({data:[],error:null}),
+        supabase.from('community_members').select('community_id').eq('user_id',user.id).eq('role','admin').limit(1),
+      ]);
+      if(active) { setCommunityRoles(roles.error ? {} : Object.fromEntries((roles.data??[]).map(row=>[row.community_id,row.role]))); setGlobalAdmin(!admin.error && Boolean(admin.data?.length)); }
+    })();
+    return () => { active = false; };
+  }, [user?.id, communities]);
 
   const load = useCallback(async (offset = 0) => {
     if (!canParticipate) {
@@ -171,14 +191,7 @@ export default function FilesPage({ communities }: { communities: Community[] })
   }
 
   async function removeFile(file: StoredFile) {
-    if (!session) return navigate('/auth');
-    if (!window.confirm(`Delete “${file.name}” from this community? This cannot be undone.`)) return;
-    try {
-      await storageProvider.delete(file.id, session.access_token);
-      setFiles(current => current.filter(item => item.id !== file.id));
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Delete failed.');
-    }
+    setFiles(current => current.filter(item => item.id !== file.id));
   }
 
   const visibleFiles = files.filter(file => file.name.toLowerCase().includes(search.trim().toLowerCase()));
@@ -224,7 +237,7 @@ export default function FilesPage({ communities }: { communities: Community[] })
       <label className="sort-select"><span>Sort</span><select value={sort} onChange={event => setSort(event.target.value as 'newest' | 'upvotes')}><option value="newest">Newest</option><option value="upvotes">Most upvoted</option></select></label>
     </div>
     {error && !canParticipate && <div className="empty"><FileText/><h2>Community files</h2><p>Sign in and join a community to browse its shared files.</p><Link className="primary" to="/auth">Sign in with Google</Link></div>}
-    <div className="file-list">{visibleFiles.map(file => <FileCard key={file.id} file={file} onDelete={removeFile}/>)}</div>
+    <div className="file-list">{visibleFiles.map(file => <FileCard key={file.id} file={file} onDelete={removeFile} canDelete={file.uploaderId === user?.id || globalAdmin || ['moderator','admin'].includes(communityRoles[file.communityId || ''] || '')}/>)}</div>
     {canParticipate && hasMore && <button className="secondary load-more-files" disabled={loadingMore} onClick={() => void load(files.length)}>{loadingMore ? 'Loading…' : 'Load more files'}</button>}
     {canParticipate && !visibleFiles.length && <div className="empty"><FileText/><h2>{search ? 'No matching files' : 'Your library is waiting'}</h2><p>{search ? 'Try a different search.' : 'Share a helpful file with your community.'}</p></div>}
   </section>;
