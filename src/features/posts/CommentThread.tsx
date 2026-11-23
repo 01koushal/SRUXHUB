@@ -3,6 +3,7 @@ import { MoreHorizontal, MessageCircle, Send, X } from 'lucide-react';
 import { useAuth } from '../auth/AuthProvider';
 import { addComment, deleteComment, getComments, isCurrentUserAdmin, type Comment } from './service';
 import { buildCommentTree, commentDescendantIds, type CommentNodeData } from './commentTree';
+import { useDismissibleMenu } from '../navigation/useDismissibleMenu';
 
 export function CommentThread({ postId, commentCount, onChanged }: { postId: string; commentCount: number; onChanged?: () => void }) {
   const { user, canParticipate } = useAuth();
@@ -90,13 +91,16 @@ type CommentNodeProps = {
 function CommentNode(props: CommentNodeProps) {
   const { node, depth, admin, userId, replyTarget, replyText, submitting, deletingIds, onReply, onCancelReply, onReplyText, onSubmit, onDelete } = props;
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  useDismissibleMenu(menuOpen, () => setMenuOpen(false), menuRef, triggerRef);
   const canDelete = Boolean(userId && (node.author_id === userId || admin));
   const name = node.profiles?.display_name || node.profiles?.username || 'SRU student';
   const isReplying = replyTarget?.id === node.id;
   return <article id={`comment-${node.id}`} className="comment-node" style={{ '--thread-depth': Math.min(depth, 3) } as React.CSSProperties}>
     <div className="comment-content">
       <header><div><b>{name}</b>{node.profiles?.username && <small>@{node.profiles.username}</small>}<time dateTime={node.created_at}>{formatCommentDate(node.created_at)}</time></div>
-        <div className="comment-menu-wrap"><button type="button" className="icon-btn comment-menu-trigger" aria-label={`Options for comment by ${name}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(value => !value)}><MoreHorizontal size={17}/></button>{menuOpen && <div className="content-menu" role="menu">{canDelete ? <button type="button" role="menuitem" disabled={deletingIds.has(node.id)} onClick={() => { setMenuOpen(false); onDelete(node); }}>{deletingIds.has(node.id) ? 'Deleting…' : 'Delete comment'}</button> : <span className="menu-hint">Only the author or an admin can delete this comment.</span>}</div>}</div>
+        <div className="comment-menu-wrap" ref={menuRef}><button ref={triggerRef} type="button" className="icon-btn comment-menu-trigger" aria-label={`Options for comment by ${name}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(value => !value)}><MoreHorizontal size={17}/></button>{menuOpen && <div className="content-menu" role="menu">{canDelete ? <button type="button" role="menuitem" disabled={deletingIds.has(node.id)} onClick={() => { setMenuOpen(false); onDelete(node); }}>{deletingIds.has(node.id) ? 'Deleting…' : 'Delete comment'}</button> : <span className="menu-hint">Only the author or an admin can delete this comment.</span>}</div>}</div>
       </header>
       <p>{node.content}</p>
       <button className="text-button comment-reply-action" type="button" onClick={() => onReply(node)}><MessageCircle size={14}/>Reply</button>
