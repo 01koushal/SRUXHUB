@@ -1,8 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { CalendarDays, FileText, Info, MessageCircle, Users } from 'lucide-react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthProvider';
-import { getCommunityPosts, getMembershipRole, getUserIsAdmin, joinCommunity, leaveCommunity, listCommunities, type Community } from './service';
+import { getCommunityBySlug, getCommunityPosts, getMembershipRole, getUserIsAdmin, joinCommunity, leaveCommunity, type Community } from './service';
 import { listFiles } from '../files/service';
 import { FileCard } from '../files/FileCard';
 import type { Post } from '../posts/service';
@@ -13,7 +13,7 @@ type Tab = 'posts' | 'files' | 'about';
 export default function CommunityPage({ renderPost }: { renderPost: (post: Post, onDeleted?: () => void) => ReactNode }) {
   const navigate = useNavigate();
   const { canParticipate, user } = useAuth();
-  const slug = decodeURIComponent(location.pathname.split('/').pop() || '');
+  const { slug = '' } = useParams();
   const [community, setCommunity] = useState<Community | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
   const [files, setFiles] = useState<StoredFile[]>([]);
@@ -28,21 +28,31 @@ export default function CommunityPage({ renderPost }: { renderPost: (post: Post,
   useEffect(() => {
     let active = true;
     setLoading(true);
-    void listCommunities().then(async all => {
-      const result = all.find(item => item.slug === slug);
+    setCommunity(null);
+    setPosts([]);
+    setFiles([]);
+    setJoined(false);
+    setMemberRole(null);
+    setGlobalAdmin(false);
+    setError('');
+    void getCommunityBySlug(slug).then(async result => {
       if (!result) throw new Error('Community not found.');
-      const [communityPosts, isMember, isAdmin] = await Promise.all([
+      if (!active) return;
+      setCommunity(result);
+      const [postsResult, memberResult, adminResult] = await Promise.allSettled([
         getCommunityPosts(result.id),
         getMembershipRole(result.id),
         getUserIsAdmin(),
       ]);
       if (!active) return;
-      setCommunity(result);
-      setPosts(communityPosts as unknown as Post[]);
-      setMemberRole(typeof isMember === 'string' ? isMember : null);
-      setGlobalAdmin(isAdmin);
-      setJoined(Boolean(isMember));
-      setError('');
+      if (postsResult.status === 'fulfilled') setPosts(postsResult.value as unknown as Post[]);
+      else setError(postsResult.reason instanceof Error ? postsResult.reason.message : 'Could not load community posts.');
+      if (memberResult.status === 'fulfilled') {
+        const role = memberResult.value;
+        setMemberRole(typeof role === 'string' ? role : null);
+        setJoined(Boolean(role));
+      }
+      if (adminResult.status === 'fulfilled') setGlobalAdmin(adminResult.value);
     }).catch(cause => {
       if (active) setError(cause instanceof Error ? cause.message : 'Could not load this community.');
     }).finally(() => { if (active) setLoading(false); });
@@ -50,12 +60,12 @@ export default function CommunityPage({ renderPost }: { renderPost: (post: Post,
   }, [slug]);
 
   useEffect(() => {
-    if (tab !== 'files' || !community || !joined) return;
+    if (tab !== 'files' || !community || !canParticipate) return;
     let active = true;
     void listFiles(community.id, sort).then(data => { if (active) setFiles(data); })
       .catch(cause => { if (active) setError(cause instanceof Error ? cause.message : 'Could not load community files.'); });
     return () => { active = false; };
-  }, [tab, community, joined, sort]);
+  }, [tab, community, canParticipate, sort]);
 
   async function toggleMembership() {
     if (!canParticipate) return navigate('/auth');
@@ -96,8 +106,8 @@ export default function CommunityPage({ renderPost }: { renderPost: (post: Post,
       {posts.length === 0 && <div className="empty"><MessageCircle/><h2>No posts here yet</h2><p>Join the community and start the first conversation.</p></div>}
     </div>}
     {tab === 'files' && <section className="community-files">
-      <div className="community-files-head"><div><h2>Shared files</h2><p>Resources available to community members.</p></div><label className="sort-select"><span>Sort</span><select value={sort} onChange={event => setSort(event.target.value as 'newest' | 'upvotes')}><option value="newest">Newest</option><option value="upvotes">Most upvoted</option></select></label></div>
-      {!joined ? <div className="empty"><FileText/><h2>Join to access community files</h2><p>Membership keeps shared resources within this community.</p><button className="primary" onClick={() => void toggleMembership()}>Join community</button></div> : files.length ? <div className="file-list">{files.map(file => <FileCard key={file.id} file={file} canDelete={file.uploaderId === user?.id || globalAdmin || ['moderator','admin'].includes(memberRole || '')}/>)}</div> : <div className="empty"><FileText/><h2>No files shared yet</h2><p>Useful resources uploaded for this community will appear here.</p><Link className="secondary" to="/files">Share a file</Link></div>}
+      <div className="community-files-head"><div><h2>Shared files</h2><p>Resources available to onboarded SRU students.</p></div><label className="sort-select"><span>Sort</span><select value={sort} onChange={event => setSort(event.target.value as 'newest' | 'upvotes')}><option value="newest">Newest</option><option value="upvotes">Most upvoted</option></select></label></div>
+      {!canParticipate ? <div className="empty"><FileText/><h2>Sign in to access shared files</h2><p>Resources are available to signed-in SRU students who have completed onboarding.</p><Link className="primary" to="/auth">Sign in with Google</Link></div> : files.length ? <div className="file-list">{files.map(file => <FileCard key={file.id} file={file} canVote={joined} canDelete={file.uploaderId === user?.id || globalAdmin || ['moderator','admin'].includes(memberRole || '')}/>)}</div> : <div className="empty"><FileText/><h2>No files shared yet</h2><p>Useful resources uploaded for this community will appear here.</p>{joined && <Link className="secondary" to="/files">Share a file</Link>}</div>}
     </section>}
     {tab === 'about' && <section className="about-panel">
       <div className="about-description"><div className="eyebrow">ABOUT THIS COMMUNITY</div><h2>{community.name}</h2><p>{community.description || 'No community description has been added yet.'}</p></div>

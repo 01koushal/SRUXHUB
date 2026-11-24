@@ -21,6 +21,14 @@ export async function listCommunities() {
   return (data ?? []) as Community[];
 }
 
+export async function getCommunityBySlug(slug: string) {
+  if (!supabase) throw new Error('Supabase is not configured.');
+  const { data, error } = await supabase.from('communities')
+    .select(communityFields).eq('slug', slug).maybeSingle();
+  if (error) throw error;
+  return data as Community | null;
+}
+
 export async function joinCommunity(id: string) {
   if (!supabase) throw new Error('Sign in to join.');
   const { error } = await supabase.from('community_members').insert({ community_id: id });

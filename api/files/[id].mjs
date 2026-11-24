@@ -11,6 +11,10 @@ function developmentError(action, error) {
   return process.env.NODE_ENV === 'production' ? action : `${action}: ${error.message}`;
 }
 
+export function isPublishedCommunityFile(file) {
+  return Boolean(file?.community_id && file.visibility === 'community' && file.status === 'published');
+}
+
 export default async function handler(req, res) {
   if (!['GET', 'POST', 'DELETE'].includes(req.method)) return reply(res, 405, { error: 'Method not allowed' });
 
@@ -43,7 +47,7 @@ export default async function handler(req, res) {
     if (!file) return reply(res, 404, { error: 'File unavailable' });
 
     let membership = null;
-    if (file.community_id) {
+    if (file.community_id && req.method === 'DELETE') {
       const { data: member, error } = await db.from('community_members')
         .select('role').eq('community_id', file.community_id).eq('user_id', user.id).maybeSingle();
       if (error) return reply(res, 500, { error: developmentError('Could not verify community membership', error) });
@@ -51,7 +55,7 @@ export default async function handler(req, res) {
     }
     let allowed = file.community_id
       ? file.visibility === 'community'
-        ? Boolean(membership)
+        ? isPublishedCommunityFile(file)
         : file.owner_id === user.id
       : file.owner_id === user.id;
     if (!allowed && file.visibility === 'community') {

@@ -40,7 +40,7 @@ export async function listFiles(
       hint: error.hint,
     });
     if (error.code === 'PGRST202') {
-      throw new Error('File listing is not enabled in this database yet. Apply migrations 006 and 007, then refresh the Supabase schema cache.');
+      throw new Error('File listing is not enabled in this database yet. Apply migrations 006, 007, and 012, then refresh the Supabase schema cache.');
     }
     throw error;
   }

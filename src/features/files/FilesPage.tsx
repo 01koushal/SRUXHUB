@@ -42,7 +42,7 @@ export function FileOpenPage() {
 
 async function fileApiError(response: Response) { try { const body = await response.json() as { error?: string }; return body.error || `File unavailable (HTTP ${response.status}).`; } catch { return `File unavailable (HTTP ${response.status}).`; } }
 
-export default function FilesPage({ communities }: { communities: Community[] }) {
+export default function FilesPage({ communities, allCommunities = communities }: { communities: Community[]; allCommunities?: Community[] }) {
   const { session, user, profile, canParticipate } = useAuth();
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -53,6 +53,7 @@ export default function FilesPage({ communities }: { communities: Community[] })
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [community, setCommunity] = useState('');
+  const [fileCommunity, setFileCommunity] = useState('');
   const [sort, setSort] = useState<'newest' | 'upvotes'>('newest');
   const [search, setSearch] = useState('');
   const [busy, setBusy] = useState(false);
@@ -85,7 +86,7 @@ export default function FilesPage({ communities }: { communities: Community[] })
     }
     if (offset > 0) setLoadingMore(true);
     try {
-      const rows = await listFiles(community || undefined, sort, offset);
+      const rows = await listFiles(fileCommunity || undefined, sort, offset);
       setFiles(current => offset === 0 ? rows : [...current, ...rows]);
       setHasMore(rows.length === FILE_PAGE_SIZE);
       setError('');
@@ -94,7 +95,7 @@ export default function FilesPage({ communities }: { communities: Community[] })
     } finally {
       if (offset > 0) setLoadingMore(false);
     }
-  }, [canParticipate, community, sort]);
+  }, [canParticipate, fileCommunity, sort]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -202,9 +203,9 @@ export default function FilesPage({ communities }: { communities: Community[] })
     </header>
 
     {canParticipate ? <form className="upload-panel" onSubmit={event => void uploadFiles(event)}>
-      <div className="upload-panel-head"><span className="upload-symbol"><FileText size={20}/></span><div><strong>Share a resource</strong><p>Files are available to members of the selected community.</p></div></div>
+      <div className="upload-panel-head"><span className="upload-symbol"><FileText size={20}/></span><div><strong>Share a resource</strong><p>Published resources are available to onboarded SRU students.</p></div></div>
       <div className="upload-fields">
-        <label>Community<select required value={community} onChange={event => setCommunity(event.target.value)}>
+      <label>Upload to community<select required value={community} onChange={event => setCommunity(event.target.value)}>
           <option value="">Choose a community</option>
           {communities.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
         </select></label>
@@ -234,11 +235,12 @@ export default function FilesPage({ communities }: { communities: Community[] })
 
     <div className="library-toolbar">
       <div className="library-search"><Search size={17}/><input aria-label="Search files" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search shared files"/></div>
+      <label className="sort-select"><span>Community</span><select value={fileCommunity} onChange={event => setFileCommunity(event.target.value)}><option value="">All communities</option>{allCommunities.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       <label className="sort-select"><span>Sort</span><select value={sort} onChange={event => setSort(event.target.value as 'newest' | 'upvotes')}><option value="newest">Newest</option><option value="upvotes">Most upvoted</option></select></label>
     </div>
-    {error && !canParticipate && <div className="empty"><FileText/><h2>Community files</h2><p>Sign in and join a community to browse its shared files.</p><Link className="primary" to="/auth">Sign in with Google</Link></div>}
-    <div className="file-list">{visibleFiles.map(file => <FileCard key={file.id} file={file} onDelete={removeFile} canDelete={file.uploaderId === user?.id || globalAdmin || ['moderator','admin'].includes(communityRoles[file.communityId || ''] || '')}/>)}</div>
+    {error && !canParticipate && <div className="empty"><FileText/><h2>Community files</h2><p>Sign in with an eligible SRU Google account to browse shared resources.</p><Link className="primary" to="/auth">Sign in with Google</Link></div>}
+    <div className="file-list">{visibleFiles.map(file => <FileCard key={file.id} file={file} onDelete={removeFile} canVote={Boolean(communityRoles[file.communityId || ''])} canDelete={file.uploaderId === user?.id || globalAdmin || ['moderator','admin'].includes(communityRoles[file.communityId || ''] || '')}/>)}</div>
     {canParticipate && hasMore && <button className="secondary load-more-files" disabled={loadingMore} onClick={() => void load(files.length)}>{loadingMore ? 'Loading…' : 'Load more files'}</button>}
-    {canParticipate && !visibleFiles.length && <div className="empty"><FileText/><h2>{search ? 'No matching files' : 'Your library is waiting'}</h2><p>{search ? 'Try a different search.' : 'Share a helpful file with your community.'}</p></div>}
+    {canParticipate && !visibleFiles.length && <div className="empty"><FileText/><h2>{search ? 'No matching files' : 'No shared resources yet'}</h2><p>{search ? 'Try a different search.' : 'Published community resources will appear here.'}</p></div>}
   </section>;
 }
